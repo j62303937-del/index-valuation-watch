@@ -4,4 +4,5 @@ __pycache__/
 cloudflared.exe
 .tools/
 watchlist-store.json
+index-watch.db*
 index-valuation-watch-cloud.zip
