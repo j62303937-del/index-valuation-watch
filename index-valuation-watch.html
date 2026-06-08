@@ -131,7 +131,7 @@
     </main>
   </div>
   <script>
-    const state = { items: [], selected: null, range: "10", metric: "pe", searching: false };
+    const state = { items: [], savedItems: [], selected: null, range: "10", metric: "pe", searching: false };
     const saved = new Set(JSON.parse(localStorage.getItem("savedIndexes") || "[]"));
     let rules = JSON.parse(localStorage.getItem("alertRules") || "[]");
     let thresholds = JSON.parse(localStorage.getItem("valuationThresholds") || "{}");
@@ -245,13 +245,41 @@
       await postApi("/api/watchlist", { items: watchItemsPayload() });
     }
 
+    function hasSettings(data) {
+      return Object.values(data.thresholds || {}).length || Object.values(data.axisRanges || {}).length || (data.rules || []).length;
+    }
+
+    async function syncSettings() {
+      await postApi("/api/settings", { thresholds, axisRanges, rules });
+    }
+
+    async function loadSettings() {
+      try {
+        const data = await api("/api/settings");
+        if (hasSettings(data)) {
+          thresholds = data.thresholds || {};
+          axisRanges = data.axisRanges || {};
+          rules = data.rules || [];
+          localStorage.setItem("valuationThresholds", JSON.stringify(thresholds));
+          localStorage.setItem("axisRanges", JSON.stringify(axisRanges));
+          localStorage.setItem("alertRules", JSON.stringify(rules));
+        } else if (hasSettings({ thresholds, axisRanges, rules })) {
+          await syncSettings();
+        }
+      } catch (e) {
+        console.warn(e);
+      }
+    }
+
     async function loadInitial() {
       state.searching = false;
+      await loadSettings();
       let watchData = { snapshots: [], items: [] };
       try {
         watchData = await api("/api/watchlist");
         (watchData.items || []).forEach(item => {
           saved.add(item.code);
+          saved.add(item.rawCode);
           if (item.focus) {
             focusMetrics[item.code] = item.focus;
             focusMetrics[item.rawCode] = item.focus;
@@ -265,6 +293,7 @@
       const data = await api("/api/indices");
       if (document.getElementById("search").value.trim().length >= 2) return;
       state.items = mergeItems(watchData.snapshots || [], data);
+      state.savedItems = mergeItems(watchData.snapshots || [], watchData.items || []);
       renderList();
       if (document.getElementById("search").value.trim().length >= 2) return;
       if (state.items[0]) await loadDetail(state.items[0].rawCode || state.items[0].code);
@@ -315,7 +344,7 @@
     }
 
     function renderSaved() {
-      const rows = state.items.filter(item => saved.has(item.code));
+      const rows = (state.savedItems && state.savedItems.length) ? state.savedItems : state.items.filter(item => saved.has(item.code) || saved.has(item.rawCode));
       document.getElementById("savedList").innerHTML = rows.length ? rows.map(item => {
         const key = focusMetrics[item.code] || focusMetrics[item.rawCode] || "pe";
         const metric = item.metrics?.[key] || {};
@@ -512,7 +541,7 @@
       const item = state.selected;
       const rows = rules.filter(r => r.code === item?.code);
       document.getElementById("rules").innerHTML = rows.length ? rows.map(r => `<div class="rule"><div><strong>${item.metrics[r.metric]?.label || r.metric} ${r.levelText}</strong><br><small>${item.name}</small></div><button class="del" data-id="${r.id}">删除</button></div>`).join("") : `<div class="empty">还没有提醒规则。</div>`;
-      document.querySelectorAll(".del").forEach(btn => btn.onclick = () => { rules = rules.filter(r => String(r.id) !== btn.dataset.id); localStorage.setItem("alertRules", JSON.stringify(rules)); renderRules(); });
+      document.querySelectorAll(".del").forEach(btn => btn.onclick = () => { rules = rules.filter(r => String(r.id) !== btn.dataset.id); localStorage.setItem("alertRules", JSON.stringify(rules)); syncSettings().catch(console.error); renderRules(); });
     }
 
     document.getElementById("search").addEventListener("input", e => {
@@ -575,6 +604,7 @@
       if (Object.values(values).some(v => v !== null && Number.isNaN(v))) return;
       axisRanges[axisKey(state.selected.code, state.metric)] = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== null));
       localStorage.setItem("axisRanges", JSON.stringify(axisRanges));
+      syncSettings().catch(console.error);
       render();
     };
     document.getElementById("saveThresholds").onclick = () => {
@@ -588,6 +618,7 @@
       if ([values.danger, values.median, values.opportunity].some(v => Number.isNaN(v))) return;
       thresholds[thresholdKey(state.selected.code, metricKey)] = values;
       localStorage.setItem("valuationThresholds", JSON.stringify(thresholds));
+      syncSettings().catch(console.error);
       render();
     };
     document.getElementById("saveBtn").onclick = () => {
@@ -597,14 +628,18 @@
       syncWatchlist().catch(console.error);
       render();
     };
-    document.getElementById("addRule").onclick = () => { if (!state.selected) return; const level = document.getElementById("ruleLevel"); rules.push({ id: Date.now(), code: state.selected.code, metric: document.getElementById("ruleMetric").value, level: level.value, levelText: level.options[level.selectedIndex].text }); localStorage.setItem("alertRules", JSON.stringify(rules)); renderRules(); };
-    const initialQuery = new URLSearchParams(location.search).get("q");
-    if (initialQuery) {
-      document.getElementById("search").value = initialQuery;
-      search(initialQuery).catch(console.error);
-    } else {
-      loadInitial().catch(console.error);
+    document.getElementById("addRule").onclick = () => { if (!state.selected) return; const level = document.getElementById("ruleLevel"); rules.push({ id: Date.now(), code: state.selected.code, metric: document.getElementById("ruleMetric").value, level: level.value, levelText: level.options[level.selectedIndex].text }); localStorage.setItem("alertRules", JSON.stringify(rules)); syncSettings().catch(console.error); renderRules(); };
+    async function boot() {
+      const initialQuery = new URLSearchParams(location.search).get("q");
+      if (initialQuery) {
+        await loadSettings();
+        document.getElementById("search").value = initialQuery;
+        await search(initialQuery);
+      } else {
+        await loadInitial();
+      }
     }
+    boot().catch(console.error);
   </script>
 </body>
 </html>
