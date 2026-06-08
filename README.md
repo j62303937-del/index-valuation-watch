@@ -32,3 +32,21 @@ Set `INDEX_WATCH_DB` to use another database path, for example a mounted persist
 The app schedules a Beijing-time 20:00 daily refresh for saved indexes. If the cloud service is asleep or restarted and misses 20:00, the next startup or page visit will detect the missed refresh and run a background catch-up update.
 
 Render free instances may sleep and may use ephemeral storage. For durable long-term settings, attach a persistent disk or migrate the database to managed Postgres.
+
+## Email Alerts
+
+Alert rules support these trigger directions: greater than or less than opportunity, median, or danger values.
+
+Set these Render environment variables to enable email delivery:
+
+```text
+ALERT_EMAIL_HOST=smtp.qq.com
+ALERT_EMAIL_PORT=465
+ALERT_EMAIL_USER=your_sender@qq.com
+ALERT_EMAIL_PASSWORD=your_smtp_authorization_code
+ALERT_EMAIL_FROM=your_sender@qq.com
+ALERT_EMAIL_TO=694301103@qq.com
+ALERT_EMAIL_TLS=true
+```
+
+For QQ Mail, `ALERT_EMAIL_PASSWORD` should be the SMTP authorization code, not the login password.
