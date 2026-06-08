@@ -5,6 +5,7 @@ import hashlib
 import math
 import os
 import re
+import smtplib
 import sqlite3
 import statistics
 import threading
@@ -12,6 +13,7 @@ import time
 import urllib.parse
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -74,6 +76,32 @@ LEGULEGU_SYMBOLS = {
 METRIC_KEYS = {"pe", "pb", "dy", "ps"}
 FUNDDB_METRIC_MAP = {"pe": "pe", "pb": "pb", "dy": "xilv"}
 FUNDDB_METRIC_LABELS = {"pe": "市盈率", "pb": "市净率", "dy": "股息率"}
+
+FUNDDB_EXTRA_INDEXES = [
+    {"guCode": "980092.CNI", "rawCode": "980092", "displayCode": "980092.CNI", "name": "\u81ea\u7531\u73b0\u91d1\u6d41", "category": "funddb-extra"},
+]
+ALERT_LEVEL_LABELS = {
+    "gt_opportunity": "\u5927\u4e8e\u673a\u4f1a\u503c",
+    "lt_opportunity": "\u5c0f\u4e8e\u673a\u4f1a\u503c",
+    "gt_median": "\u5927\u4e8e\u4e2d\u4f4d\u6570",
+    "lt_median": "\u5c0f\u4e8e\u4e2d\u4f4d\u6570",
+    "gt_danger": "\u5927\u4e8e\u5371\u9669\u503c",
+    "lt_danger": "\u5c0f\u4e8e\u5371\u9669\u503c",
+    "opportunity": "\u5c0f\u4e8e\u673a\u4f1a\u503c",
+    "median": "\u5927\u4e8e\u4e2d\u4f4d\u6570",
+    "danger": "\u5927\u4e8e\u5371\u9669\u503c",
+}
+ALERT_TARGETS = {
+    "gt_opportunity": ("opportunity", ">"),
+    "lt_opportunity": ("opportunity", "<"),
+    "gt_median": ("median", ">"),
+    "lt_median": ("median", "<"),
+    "gt_danger": ("danger", ">"),
+    "lt_danger": ("danger", "<"),
+    "opportunity": ("opportunity", "<"),
+    "median": ("median", ">"),
+    "danger": ("danger", ">"),
+}
 
 
 def wants_metric(focus_metric: str | None, metric_key: str) -> bool:
@@ -143,6 +171,13 @@ def init_db():
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
                     updated_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS alert_events (
+                    event_key TEXT PRIMARY KEY,
+                    rule_id TEXT NOT NULL,
+                    condition TEXT NOT NULL,
+                    as_of TEXT,
+                    sent_at TEXT NOT NULL
                 );
             """)
 
@@ -261,6 +296,138 @@ def refresh_settings_cache_timestamp():
             db_set_metadata(conn, "settingsLastRefresh", datetime.now(BEIJING_TZ).isoformat(timespec="seconds"))
 
 
+def email_alert_config() -> dict:
+    return {
+        "host": os.environ.get("ALERT_EMAIL_HOST", "").strip(),
+        "port": int(os.environ.get("ALERT_EMAIL_PORT", "465") or "465"),
+        "user": os.environ.get("ALERT_EMAIL_USER", "").strip(),
+        "password": os.environ.get("ALERT_EMAIL_PASSWORD", "").strip(),
+        "sender": os.environ.get("ALERT_EMAIL_FROM", os.environ.get("ALERT_EMAIL_USER", "")).strip(),
+        "to": os.environ.get("ALERT_EMAIL_TO", "694301103@qq.com").strip(),
+        "tls": os.environ.get("ALERT_EMAIL_TLS", "true").lower() not in {"0", "false", "no"},
+    }
+
+
+def email_alert_ready() -> bool:
+    cfg = email_alert_config()
+    return bool(cfg["host"] and cfg["sender"] and cfg["to"])
+
+
+def send_email_alert(subject: str, body: str) -> dict:
+    cfg = email_alert_config()
+    if not email_alert_ready():
+        return {"sent": False, "error": "Email alert is not configured"}
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = cfg["sender"]
+    msg["To"] = cfg["to"]
+    msg.set_content(body)
+    if cfg["tls"]:
+        with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=20) as smtp:
+            if cfg["user"] and cfg["password"]:
+                smtp.login(cfg["user"], cfg["password"])
+            smtp.send_message(msg)
+    else:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=20) as smtp:
+            smtp.starttls()
+            if cfg["user"] and cfg["password"]:
+                smtp.login(cfg["user"], cfg["password"])
+            smtp.send_message(msg)
+    return {"sent": True}
+
+
+def alert_event_exists(event_key: str) -> bool:
+    init_db()
+    with DB_LOCK:
+        with db_connect() as conn:
+            return conn.execute("SELECT 1 FROM alert_events WHERE event_key=?", (event_key,)).fetchone() is not None
+
+
+def record_alert_event(event_key: str, rule_id: str, condition: str, as_of: str | None):
+    init_db()
+    with DB_LOCK:
+        with db_connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO alert_events(event_key, rule_id, condition, as_of, sent_at) VALUES(?, ?, ?, ?, ?)",
+                (event_key, str(rule_id), condition, as_of or "", datetime.now(BEIJING_TZ).isoformat(timespec="seconds")),
+            )
+
+
+def threshold_key_for(code: str, metric_key: str) -> str:
+    return f"{code}:{metric_key}"
+
+
+def metric_with_custom_thresholds(snapshot: dict, metric_key: str, settings: dict) -> dict:
+    metric = deepcopy((snapshot.get("metrics") or {}).get(metric_key) or {})
+    thresholds = settings.get("thresholds") or {}
+    custom = (
+        thresholds.get(threshold_key_for(snapshot.get("code") or "", metric_key))
+        or thresholds.get(threshold_key_for(snapshot.get("rawCode") or "", metric_key))
+    )
+    if isinstance(custom, dict):
+        for key in ("danger", "median", "opportunity"):
+            value = clean_number(custom.get(key))
+            if value is not None:
+                metric[key] = value
+    return metric
+
+
+def alert_condition(metric: dict, level: str) -> tuple[bool, str, float | None, float | None]:
+    target_key, op = ALERT_TARGETS.get(level, (None, None))
+    current = clean_number(metric.get("current"))
+    target = clean_number(metric.get(target_key)) if target_key else None
+    if current is None or target is None:
+        return False, ALERT_LEVEL_LABELS.get(level, level), current, target
+    matched = current > target if op == ">" else current < target
+    return matched, ALERT_LEVEL_LABELS.get(level, level), current, target
+
+
+def evaluate_alerts_for_snapshot(snapshot: dict, settings: dict | None = None, force: bool = False) -> list[dict]:
+    settings = settings or load_app_settings()
+    rules = settings.get("rules") or []
+    results = []
+    code_keys = {snapshot.get("code"), snapshot.get("rawCode"), normalize_index_code(snapshot.get("rawCode") or snapshot.get("code") or "")}
+    for rule in rules:
+        if rule.get("code") not in code_keys:
+            continue
+        metric_key = rule.get("metric")
+        if metric_key not in METRIC_KEYS:
+            continue
+        metric = metric_with_custom_thresholds(snapshot, metric_key, settings)
+        matched, label, current, target = alert_condition(metric, rule.get("level") or "")
+        result = {
+            "ruleId": str(rule.get("id") or ""),
+            "name": snapshot.get("name") or snapshot.get("code"),
+            "code": snapshot.get("code"),
+            "metric": metric.get("label") or metric_key,
+            "condition": label,
+            "current": current,
+            "target": target,
+            "matched": matched,
+            "sent": False,
+        }
+        if matched:
+            as_of = metric.get("asOf") or (snapshot.get("cachedAt") or "")[:10] or datetime.now(BEIJING_TZ).date().isoformat()
+            event_key = f"{result['ruleId']}:{metric_key}:{rule.get('level')}:{as_of}"
+            if force or not alert_event_exists(event_key):
+                subject = f"[Index Watch] {result['name']} {result['metric']} {label}"
+                body = (
+                    f"{result['name']} ({result['code']})\n"
+                    f"{result['metric']}: {current}\n"
+                    f"{label}: {target}\n"
+                    f"Date: {as_of}\n"
+                    f"Cached at: {snapshot.get('cachedAt') or ''}\n"
+                )
+                sent = send_email_alert(subject, body)
+                result.update(sent)
+                if sent.get("sent"):
+                    record_alert_event(event_key, result["ruleId"], rule.get("level") or "", as_of)
+            else:
+                result["skipped"] = "already_sent"
+        results.append(result)
+    return results
+
+
 def watch_key(raw_code: str, focus_metric: str | None) -> str:
     focus = focus_metric if focus_metric in METRIC_KEYS else ""
     return f"{normalize_index_code(raw_code)}:{focus}"
@@ -325,6 +492,10 @@ def refresh_watchlist_cache() -> dict:
             try:
                 snapshot = refresh_watch_item(row, quotes)
                 snapshots[watch_key(row["rawCode"], row.get("focus"))] = snapshot
+                try:
+                    evaluate_alerts_for_snapshot(snapshot)
+                except Exception as alert_exc:
+                    snapshot["alertNote"] = f"Alert check failed: {type(alert_exc).__name__}: {alert_exc}"
             except Exception as exc:
                 old = (store.get("snapshots") or {}).get(watch_key(row["rawCode"], row.get("focus"))) or {}
                 old["sourceNote"] = f"Scheduled refresh failed: {type(exc).__name__}: {exc}"
@@ -970,6 +1141,7 @@ def funddb_index_records() -> list[dict]:
     data = funddb_post("/v2/guzhi/showcategory", {"category_id": ""})
     rows = data.get("data", {}).get("right_list", []) if data.get("code") == 0 else []
     records = []
+    records.extend(deepcopy(FUNDDB_EXTRA_INDEXES))
     for row in rows:
         gu_code = str(row.get("gu_code") or "")
         name = str(row.get("gu_name") or "")
@@ -1353,6 +1525,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.write_json(self.handle_watchlist_post())
             if parsed.path == "/api/settings":
                 return self.write_json(self.handle_settings_post())
+            if parsed.path == "/api/test-alerts":
+                return self.write_json(self.handle_test_alerts())
             return self.write_json({"ok": False, "error": "Unknown POST endpoint"})
         except Exception as exc:
             return self.write_json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -1451,6 +1625,21 @@ class Handler(SimpleHTTPRequestHandler):
             "rules": payload.get("rules", []),
         })
         return {"ok": True, "data": settings}
+
+    def handle_test_alerts(self) -> dict:
+        store = load_watchlist_store()
+        settings = load_app_settings()
+        results = []
+        for snapshot in (store.get("snapshots") or {}).values():
+            if isinstance(snapshot, dict):
+                results.extend(evaluate_alerts_for_snapshot(snapshot, settings, force=True))
+        return {
+            "ok": True,
+            "data": {
+                "emailConfigured": email_alert_ready(),
+                "results": results,
+            },
+        }
 
     def write_json(self, payload: dict):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
