@@ -122,8 +122,9 @@
           <div class="panel pad" style="margin-top:14px">
             <h2>提醒规则</h2>
             <div class="form-row"><label>指标</label><select id="ruleMetric" class="input"><option value="pe">市盈率TTM</option><option value="pb">市净率LF</option><option value="dy">股息率</option><option value="ps">市销率TTM</option></select></div>
-            <div class="form-row"><label>触发状态</label><select id="ruleLevel" class="input"><option value="opportunity">达到机会值</option><option value="median">接近中位数</option><option value="danger">达到危险值</option></select></div>
-            <button id="addRule" class="primary">添加微信提醒</button>
+            <div class="form-row"><label>触发状态</label><select id="ruleLevel" class="input"><option value="gt_opportunity">大于机会值</option><option value="lt_opportunity">小于机会值</option><option value="gt_median">大于中位数</option><option value="lt_median">小于中位数</option><option value="gt_danger">大于危险值</option><option value="lt_danger">小于危险值</option></select></div>
+            <button id="addRule" class="primary">添加提醒规则</button>
+            <button id="testAlerts" class="ghost" style="margin-top:8px;width:100%">测试提醒</button>
             <div id="rules"></div>
           </div>
         </section>
@@ -431,7 +432,7 @@
       canvas.height = Math.floor(box.height * dpr);
       const ctx = canvas.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const w = box.width, h = box.height, pad = { l: 58, r: 82, t: 20, b: 64 };
+      const w = box.width, h = box.height, pad = { l: 58, r: 82, t: 20, b: 78 };
       const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
@@ -515,7 +516,6 @@
         if (value == null) return;
         const yy = y(Number(value));
         ctx.beginPath(); ctx.setLineDash([8, 7]); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.moveTo(pad.l, yy); ctx.lineTo(w - pad.r, yy); ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = color; ctx.textAlign = "right"; ctx.fillText(label, w - pad.r - 8, yy - 6);
       });
 
       if (hasPrice) {
@@ -537,11 +537,32 @@
         ctx.fillText((labels[idx] || "").slice(2, 7), x(idx), h - 30);
       }
       ctx.textAlign = "left";
-      const legendY = h - 10;
-      ctx.fillStyle = "rgba(92,181,196,.9)"; ctx.beginPath(); ctx.arc(pad.l, legendY - 4, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "#27313c"; ctx.fillText(metric.label || "估值指标", pad.l + 12, legendY);
-      ctx.strokeStyle = "#326d99"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(pad.l + 110, legendY - 4); ctx.lineTo(pad.l + 142, legendY - 4); ctx.stroke();
-      ctx.fillStyle = "#27313c"; ctx.fillText("指数点位", pad.l + 150, legendY);
+      let legendX = pad.l, legendY = h - 34;
+      const nextLegend = width => {
+        if (legendX + width > w - pad.r) {
+          legendX = pad.l;
+          legendY += 22;
+        }
+      };
+      const dotLegend = (label, color) => {
+        const width = 92 + ctx.measureText(label).width;
+        nextLegend(width);
+        ctx.fillStyle = color; ctx.beginPath(); ctx.arc(legendX + 5, legendY - 4, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#27313c"; ctx.fillText(label, legendX + 16, legendY);
+        legendX += width;
+      };
+      const lineLegend = (label, color, dash = []) => {
+        const width = 82 + ctx.measureText(label).width;
+        nextLegend(width);
+        ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.setLineDash(dash); ctx.beginPath(); ctx.moveTo(legendX, legendY - 4); ctx.lineTo(legendX + 32, legendY - 4); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = "#27313c"; ctx.fillText(label, legendX + 40, legendY);
+        legendX += width;
+      };
+      dotLegend(metric.label || "估值指标", "rgba(92,181,196,.9)");
+      lineLegend("指数点位", "#326d99");
+      lineLegend("危险值", "#b9322b", [8, 7]);
+      lineLegend("中位数", "#7d8791", [8, 7]);
+      lineLegend("机会值", "#32945e", [8, 7]);
     }
 
     function renderRules() {
@@ -636,6 +657,24 @@
       render();
     };
     document.getElementById("addRule").onclick = () => { if (!state.selected) return; const level = document.getElementById("ruleLevel"); rules.push({ id: Date.now(), code: state.selected.code, metric: document.getElementById("ruleMetric").value, level: level.value, levelText: level.options[level.selectedIndex].text }); localStorage.setItem("alertRules", JSON.stringify(rules)); syncSettings().catch(console.error); renderRules(); };
+    document.getElementById("testAlerts").onclick = async () => {
+      const btn = document.getElementById("testAlerts");
+      const old = btn.textContent;
+      btn.textContent = "测试中...";
+      btn.disabled = true;
+      try {
+        const res = await postApi("/api/test-alerts", {});
+        const list = res.results || [];
+        const matched = list.filter(x => x.matched).length;
+        const sent = list.filter(x => x.sent).length;
+        alert(res.emailConfigured ? `检查 ${list.length} 条规则，命中 ${matched} 条，已发送 ${sent} 条。` : `检查 ${list.length} 条规则，命中 ${matched} 条。邮箱提醒还没有配置。`);
+      } catch (e) {
+        alert(`测试失败：${e.message}`);
+      } finally {
+        btn.textContent = old;
+        btn.disabled = false;
+      }
+    };
     async function boot() {
       const initialQuery = new URLSearchParams(location.search).get("q");
       await loadSettings();
