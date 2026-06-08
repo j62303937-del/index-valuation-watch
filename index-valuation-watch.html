@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>指数估值观察台</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f6f8; color: #17202a; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    button, input, select { font: inherit; }
+    .app { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 100vh; }
+    aside { background: #18232e; color: #fff; padding: 22px 18px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 800; margin-bottom: 18px; }
+    .mark { width: 34px; height: 34px; border-radius: 7px; background: #2f9db4; display: grid; place-items: center; }
+    .search { width: 100%; border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.08); color: #fff; border-radius: 8px; padding: 10px 12px; outline: none; }
+    .search::placeholder { color: rgba(255,255,255,.58); }
+    .side-title { margin: 18px 0 8px; color: rgba(255,255,255,.65); font-size: 13px; }
+    .list { display: flex; flex-direction: column; gap: 8px; }
+    .item { border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.05); color: #fff; border-radius: 8px; padding: 12px; text-align: left; cursor: pointer; }
+    .item.active { border-color: #2f9db4; background: rgba(47,157,180,.24); }
+    .item strong { display: block; }
+    .item small { display: block; color: rgba(255,255,255,.65); margin-top: 4px; }
+    .mini { display: flex; justify-content: space-between; margin-top: 9px; color: rgba(255,255,255,.82); font-size: 13px; }
+    main { min-width: 0; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 14px 20px; background: #fff; border-bottom: 1px solid #d8dee5; }
+    .btn { min-height: 38px; border: 1px solid #c6cdd5; background: #fff; color: #27313c; padding: 0 14px; border-radius: 4px; font-weight: 700; cursor: pointer; }
+    .btn.active { background: #2f9db4; border-color: #2f9db4; color: #fff; }
+    .content { padding: 20px; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 18px; align-items: start; }
+    .headline { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
+    h1 { margin: 0; font-size: 24px; }
+    .quote { font-size: 20px; font-weight: 800; color: #2e8b57; margin-left: 12px; }
+    .panel { background: #fff; border: 1px solid #e2e6ea; border-radius: 8px; box-shadow: 0 8px 24px rgba(21,33,45,.08); }
+    .pad { padding: 16px; }
+    .chart-panel { padding: 18px 20px 16px; }
+    .chart-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    h2 { margin: 0; font-size: 18px; }
+    .chart-wrap { height: 430px; position: relative; }
+    canvas { width: 100%; height: 100%; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-top: 14px; }
+    .stat { border: 1px solid #e2e6ea; border-radius: 7px; padding: 10px; background: #fbfcfd; }
+    .stat span { display: block; color: #697582; font-size: 12px; margin-bottom: 6px; }
+    .stat strong { font-size: 18px; word-break: break-word; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px 6px; border-bottom: 1px solid #edf0f2; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    .pill { display: inline-block; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 800; }
+    .hot { background: #ffe8e5; color: #c83b35; }
+    .mid { background: #edf0f2; color: #46515d; }
+    .good { background: #e5f5ec; color: #2e8b57; }
+    .form-row { display: grid; gap: 7px; margin-top: 12px; }
+    label { color: #697582; font-size: 13px; font-weight: 700; }
+    .input { width: 100%; min-height: 38px; border: 1px solid #cbd2da; border-radius: 6px; padding: 0 10px; background: #fff; }
+    .primary { width: 100%; min-height: 40px; border: 0; border-radius: 6px; background: #2f9db4; color: #fff; font-weight: 800; cursor: pointer; margin-top: 14px; }
+    .empty { color: #697582; font-size: 14px; line-height: 1.6; }
+    .rule { border: 1px solid #e2e6ea; border-radius: 7px; padding: 10px; margin-top: 8px; background: #fbfcfd; display: flex; justify-content: space-between; gap: 8px; }
+    .del { border: 1px solid #e2b8b5; color: #c83b35; background: #fff; border-radius: 5px; cursor: pointer; }
+    @media (max-width: 1100px) { .app { grid-template-columns: 1fr; } .content { grid-template-columns: 1fr; } .list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); } }
+    @media (max-width: 680px) { .content { padding: 12px; } .list, .stats { grid-template-columns: 1fr; } .chart-wrap { height: 330px; } h1 { font-size: 20px; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand"><div class="mark">估</div><span>指数估值观察台</span></div>
+      <input id="search" class="search" placeholder="搜索指数名称或代码">
+      <button id="searchBtn" class="primary" style="margin-top:10px">搜索</button>
+      <div id="searchTitle" class="side-title" style="display:none">搜索结果</div>
+      <div id="indexList" class="list"></div>
+      <div class="side-title">我的收藏</div>
+      <div id="savedList" class="list"></div>
+    </aside>
+    <main>
+      <div class="toolbar">
+        <span>时间范围</span>
+        <button class="btn range" data-range="3">3Y</button>
+        <button class="btn range" data-range="5">5Y</button>
+        <button class="btn range active" data-range="10">10Y</button>
+        <button class="btn range" data-range="all">上市以来</button>
+        <button class="btn metric active" data-metric="pe">市盈率TTM</button>
+        <button class="btn metric" data-metric="pb">市净率LF</button>
+        <button class="btn metric" data-metric="dy">股息率</button>
+        <button class="btn metric" data-metric="ps">市销率TTM</button>
+      </div>
+      <div class="content">
+        <section>
+          <div class="headline">
+            <div><h1 id="title"></h1><span id="quote" class="quote"></span><span id="change" class="quote"></span></div>
+            <button id="saveBtn" class="btn">☆</button>
+          </div>
+          <div class="panel chart-panel">
+            <div class="chart-head"><h2 id="chartTitle">市盈率TTM</h2><span id="statusTag" class="pill mid"></span></div>
+            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <div id="stats" class="stats"></div>
+          </div>
+        </section>
+        <section class="side">
+          <div class="panel pad">
+            <h2>估值指标</h2>
+            <table><thead><tr><th>指标</th><th>当前值</th><th>分位点</th><th>状态</th></tr></thead><tbody id="metricRows"></tbody></table>
+          </div>
+          <div class="panel pad" style="margin-top:14px">
+            <h2>重点指标</h2>
+            <div class="form-row"><label>当前指数重点关注</label><select id="focusMetric" class="input"><option value="">全部指标</option><option value="pe">市盈率TTM</option><option value="pb">市净率LF</option><option value="dy">股息率</option><option value="ps">市销率TTM</option></select></div>
+            <button id="saveFocusMetric" class="primary">保存重点指标</button>
+          </div>
+          <div class="panel pad" style="margin-top:14px">
+            <h2>坐标轴范围</h2>
+            <div class="form-row"><label>左轴最小值（估值）</label><input id="leftAxisMin" class="input" type="number" step="0.01" placeholder="自动"></div>
+            <div class="form-row"><label>左轴最大值（估值）</label><input id="leftAxisMax" class="input" type="number" step="0.01" placeholder="自动"></div>
+            <div class="form-row"><label>右轴最小值（指数点位）</label><input id="rightAxisMin" class="input" type="number" step="0.01" placeholder="自动"></div>
+            <div class="form-row"><label>右轴最大值（指数点位）</label><input id="rightAxisMax" class="input" type="number" step="0.01" placeholder="自动"></div>
+            <button id="saveAxisRange" class="primary">保存坐标范围</button>
+          </div>
+          <div class="panel pad" style="margin-top:14px">
+            <h2>估值线设置</h2>
+            <div class="form-row"><label>指标</label><select id="thresholdMetric" class="input"><option value="pe">市盈率TTM</option><option value="pb">市净率LF</option><option value="dy">股息率</option><option value="ps">市销率TTM</option></select></div>
+            <div class="form-row"><label>危险值</label><input id="dangerInput" class="input" type="number" step="0.01" placeholder="例如 35.83"></div>
+            <div class="form-row"><label>中位数</label><input id="medianInput" class="input" type="number" step="0.01" placeholder="例如 30.63"></div>
+            <div class="form-row"><label>机会值</label><input id="opportunityInput" class="input" type="number" step="0.01" placeholder="例如 25.72"></div>
+            <button id="saveThresholds" class="primary">保存估值线</button>
+          </div>
+          <div class="panel pad" style="margin-top:14px">
+            <h2>提醒规则</h2>
+            <div class="form-row"><label>指标</label><select id="ruleMetric" class="input"><option value="pe">市盈率TTM</option><option value="pb">市净率LF</option><option value="dy">股息率</option><option value="ps">市销率TTM</option></select></div>
+            <div class="form-row"><label>触发状态</label><select id="ruleLevel" class="input"><option value="opportunity">达到机会值</option><option value="median">接近中位数</option><option value="danger">达到危险值</option></select></div>
+            <button id="addRule" class="primary">添加微信提醒</button>
+            <div id="rules"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script>
+    const state = { items: [], selected: null, range: "10", metric: "pe", searching: false };
+    const saved = new Set(JSON.parse(localStorage.getItem("savedIndexes") || "[]"));
+    let rules = JSON.parse(localStorage.getItem("alertRules") || "[]");
+    let thresholds = JSON.parse(localStorage.getItem("valuationThresholds") || "{}");
+    let focusMetrics = JSON.parse(localStorage.getItem("focusMetrics") || "{}");
+    let axisRanges = JSON.parse(localStorage.getItem("axisRanges") || "{}");
+    const metricKeys = ["pe", "pb", "dy", "ps"];
+
+    const text = v => v == null || v === "" || (typeof v === "number" && Number.isNaN(v)) ? "暂无" : String(v);
+    const pct = v => v == null ? "暂无" : `${v}%`;
+    const money = v => v == null ? "暂无" : Number(v).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+
+    function thresholdKey(code, metricKey) {
+      return `${code}:${metricKey}`;
+    }
+
+    function axisKey(code, metricKey) {
+      return `${code}:${metricKey}`;
+    }
+
+    function focusedMetricKey(code) {
+      return focusMetrics[code] || "";
+    }
+
+    function focusedMetricFor(rawCode) {
+      if (focusMetrics[rawCode]) return focusMetrics[rawCode];
+      const item = state.items.find(x => x.rawCode === rawCode || x.code === rawCode);
+      return item ? (focusMetrics[item.code] || focusMetrics[item.rawCode] || "") : "";
+    }
+
+    function visibleMetricKeys(code) {
+      const focus = focusedMetricKey(code);
+      return focus ? [focus] : metricKeys;
+    }
+
+    function customThresholds(code, metricKey) {
+      return thresholds[thresholdKey(code, metricKey)] || null;
+    }
+
+    function effectiveMetric(code, metricKey, metric) {
+      const custom = customThresholds(code, metricKey);
+      if (!custom) return metric || {};
+      return {
+        ...(metric || {}),
+        danger: custom.danger ?? metric?.danger,
+        median: custom.median ?? metric?.median,
+        opportunity: custom.opportunity ?? metric?.opportunity,
+      };
+    }
+
+    function statusFor(key, metric) {
+      if (!metric || metric.current == null) return ["暂无", "mid"];
+      if (metric.danger == null || metric.opportunity == null) {
+        if (key === "dy") return [metric.current >= 1 ? "机会" : "中性", metric.current >= 1 ? "good" : "mid"];
+        return [metric.current >= 30 || metric.current >= 8 ? "危险" : "中性", metric.current >= 30 || metric.current >= 8 ? "hot" : "mid"];
+      }
+      if (key === "dy") {
+        if (metric.current >= metric.opportunity) return ["机会", "good"];
+        if (metric.current <= metric.danger) return ["危险", "hot"];
+      } else {
+        if (metric.current <= metric.opportunity) return ["机会", "good"];
+        if (metric.current >= metric.danger) return ["危险", "hot"];
+      }
+      return ["中性", "mid"];
+    }
+
+    async function api(path) {
+      const res = await fetch(path);
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "api failed");
+      return json.data;
+    }
+
+    async function postApi(path, payload) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "api failed");
+      return json.data;
+    }
+
+    function mergeItems(primary, fallback) {
+      const rows = [];
+      const seen = new Set();
+      [...(primary || []), ...(fallback || [])].forEach(item => {
+        const key = item.rawCode || item.code;
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        rows.push(item);
+      });
+      return rows;
+    }
+
+    function watchItemsPayload() {
+      const known = [...state.items, state.selected].filter(Boolean);
+      return [...saved].map(code => {
+        const item = known.find(x => x.code === code || x.rawCode === code) || { code, rawCode: code, name: code };
+        return {
+          code: item.code || code,
+          rawCode: item.rawCode || code,
+          name: item.name || code,
+          focus: focusMetrics[item.code] || focusMetrics[item.rawCode] || "",
+          range: state.range || "10",
+        };
+      });
+    }
+
+    async function syncWatchlist() {
+      await postApi("/api/watchlist", { items: watchItemsPayload() });
+    }
+
+    async function loadInitial() {
+      state.searching = false;
+      let watchData = { snapshots: [], items: [] };
+      try {
+        watchData = await api("/api/watchlist");
+        (watchData.items || []).forEach(item => {
+          saved.add(item.code);
+          if (item.focus) {
+            focusMetrics[item.code] = item.focus;
+            focusMetrics[item.rawCode] = item.focus;
+          }
+        });
+        localStorage.setItem("savedIndexes", JSON.stringify([...saved]));
+        localStorage.setItem("focusMetrics", JSON.stringify(focusMetrics));
+      } catch (e) {
+        console.warn(e);
+      }
+      const data = await api("/api/indices");
+      if (document.getElementById("search").value.trim().length >= 2) return;
+      state.items = mergeItems(watchData.snapshots || [], data);
+      renderList();
+      if (document.getElementById("search").value.trim().length >= 2) return;
+      if (state.items[0]) await loadDetail(state.items[0].rawCode || state.items[0].code);
+    }
+
+    async function search(keyword) {
+      state.searching = true;
+      state.items = await api(`/api/search?q=${encodeURIComponent(keyword)}`);
+      renderList();
+      if (state.items[0]) await loadDetail(state.items[0].rawCode || state.items[0].code);
+    }
+
+    async function loadDetail(rawCode) {
+      const focusParam = focusedMetricFor(rawCode);
+      const focusQuery = focusParam ? `&focus=${encodeURIComponent(focusParam)}` : "";
+      state.selected = await api(`/api/index?code=${encodeURIComponent(rawCode)}&range=${encodeURIComponent(state.range)}${focusQuery}`);
+      const focus = focusedMetricFor(state.selected.rawCode) || focusedMetricKey(state.selected.code);
+      if (focus) {
+        state.metric = focus;
+        document.querySelectorAll(".metric").forEach(x => x.classList.toggle("active", x.dataset.metric === focus));
+        document.getElementById("ruleMetric").value = focus;
+      }
+      const idx = state.items.findIndex(x => x.rawCode === state.selected.rawCode || x.code === state.selected.code);
+      if (idx >= 0) state.items[idx] = state.selected;
+      else state.items.unshift(state.selected);
+      render();
+    }
+
+    function renderList() {
+      document.getElementById("searchTitle").style.display = state.searching ? "" : "none";
+      if (!state.searching) {
+        document.getElementById("indexList").innerHTML = "";
+        renderSaved();
+        return;
+      }
+      const html = state.items.length ? state.items.map(item => {
+        const key = focusMetrics[item.code] || focusMetrics[item.rawCode] || "pe";
+        const metric = item.metrics?.[key] || {};
+        const [label, cls] = statusFor(key, metric);
+        return `<button class="item ${state.selected?.code === item.code ? "active" : ""}" data-code="${item.rawCode || item.code}">
+          <strong>${item.name}${saved.has(item.code) ? " \u2605" : ""}</strong><small>${item.code}</small>
+          <div class="mini"><span>${metric.label || key} ${text(metric.current)}</span><span class="pill ${cls}">${label}</span></div>
+        </button>`;
+      }).join("") : `<div class="empty">\u8bf7\u8f93\u5165\u6307\u6570\u540d\u79f0\u6216\u4ee3\u7801\u641c\u7d22\u3002</div>`;
+      document.getElementById("indexList").innerHTML = html;
+      document.querySelectorAll("#indexList .item").forEach(btn => btn.onclick = () => loadDetail(btn.dataset.code).catch(console.error));
+      renderSaved();
+    }
+
+    function renderSaved() {
+      const rows = state.items.filter(item => saved.has(item.code));
+      document.getElementById("savedList").innerHTML = rows.length ? rows.map(item => {
+        const key = focusMetrics[item.code] || focusMetrics[item.rawCode] || "pe";
+        const metric = item.metrics?.[key] || {};
+        const [label, cls] = statusFor(key, metric);
+        return `<button class="item ${state.selected?.code === item.code ? "active" : ""}" data-code="${item.rawCode || item.code}">
+          <strong>${item.name}</strong><small>${item.code}</small>
+          <div class="mini"><span>${metric.label || key} ${text(metric.current)}</span><span class="pill ${cls}">${label}</span></div>
+        </button>`;
+      }).join("") : `<div class="empty">\u70b9\u51fb\u661f\u6807\u6536\u85cf\u6307\u6570\u3002</div>`;
+      document.querySelectorAll("#savedList .item").forEach(btn => btn.onclick = () => loadDetail(btn.dataset.code).catch(console.error));
+    }
+    function render() {
+      const item = state.selected;
+      if (!item) return;
+      const metric = effectiveMetric(item.code, state.metric, item.metrics[state.metric] || {});
+      const [label, cls] = statusFor(state.metric, metric);
+      document.getElementById("title").textContent = `${item.name} ${item.code}`;
+      document.getElementById("quote").textContent = money(item.price);
+      document.getElementById("change").textContent = item.change == null ? "" : `${item.change > 0 ? "+" : ""}${item.change}%`;
+      document.getElementById("change").style.color = item.change >= 0 ? "#c83b35" : "#2e8b57";
+      document.getElementById("chartTitle").textContent = metric.label || "";
+      document.getElementById("statusTag").textContent = label;
+      document.getElementById("statusTag").className = `pill ${cls}`;
+      document.getElementById("saveBtn").textContent = saved.has(item.code) ? "★" : "☆";
+      renderList();
+      renderMetrics();
+      renderStats(metric);
+      drawChart(item, metric);
+      renderRules();
+      fillThresholdForm();
+      fillFocusForm();
+      fillAxisForm();
+    }
+
+    function renderMetrics() {
+      const item = state.selected;
+      document.getElementById("metricRows").innerHTML = visibleMetricKeys(item.code).map(key => {
+        const m = effectiveMetric(item.code, key, item.metrics[key] || {});
+        const [label, cls] = statusFor(key, m);
+        return `<tr><td>${m.label}</td><td>${text(m.current)}</td><td>${pct(m.percentile)}</td><td><span class="pill ${cls}">${label}</span></td></tr>`;
+      }).join("");
+    }
+
+    function renderStats(metric) {
+      const rows = [["当前值", metric.current], ["分位点", metric.percentile == null ? null : `${metric.percentile}%`], ["危险值", metric.danger], ["中位数", metric.median], ["机会值", metric.opportunity], ["最大值", metric.max], ["最小值", metric.min], ["z 分数", metric.z], ["频率", metric.frequency], ["数据日期", metric.asOf], ["数据源", metric.source]];
+      document.getElementById("stats").innerHTML = rows.map(([k, v]) => `<div class="stat"><span>${k}</span><strong>${text(v)}</strong></div>`).join("");
+    }
+
+    function fillThresholdForm() {
+      if (!state.selected) return;
+      const key = document.getElementById("thresholdMetric").value || state.metric;
+      const metric = effectiveMetric(state.selected.code, key, state.selected.metrics[key] || {});
+      document.getElementById("dangerInput").value = metric.danger ?? "";
+      document.getElementById("medianInput").value = metric.median ?? "";
+      document.getElementById("opportunityInput").value = metric.opportunity ?? "";
+    }
+
+    function fillFocusForm() {
+      if (!state.selected) return;
+      document.getElementById("focusMetric").value = focusedMetricFor(state.selected.rawCode) || focusedMetricKey(state.selected.code);
+    }
+
+    function fillAxisForm() {
+      if (!state.selected) return;
+      const range = axisRanges[axisKey(state.selected.code, state.metric)] || {};
+      document.getElementById("leftAxisMin").value = range.leftMin ?? "";
+      document.getElementById("leftAxisMax").value = range.leftMax ?? "";
+      document.getElementById("rightAxisMin").value = range.rightMin ?? "";
+      document.getElementById("rightAxisMax").value = range.rightMax ?? "";
+    }
+
+    function drawChart(item, metric) {
+      const canvas = document.getElementById("chart");
+      const box = canvas.parentElement.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(box.width * dpr);
+      canvas.height = Math.floor(box.height * dpr);
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const w = box.width, h = box.height, pad = { l: 58, r: 82, t: 20, b: 64 };
+      const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
+
+      const priceRows = (item.series?.price || []).filter(x => x.date && x.close != null);
+      const metricRows = (item.series?.[state.metric] || []).filter(x => x.date && x.value != null);
+      const thresholdVals = [metric.current, metric.danger, metric.median, metric.opportunity].filter(v => v != null).map(Number);
+      const hasMetricSeries = metricRows.length > 1;
+      const hasMetric = hasMetricSeries || thresholdVals.length > 0;
+      const hasPrice = priceRows.length > 1;
+      if (!hasMetric && !hasPrice) {
+        ctx.fillStyle = "#697582"; ctx.font = "bold 16px Microsoft YaHei"; ctx.fillText("暂无历史曲线数据", pad.l, pad.t + 30); return;
+      }
+
+      const baseRows = hasPrice ? priceRows : metricRows;
+      const labels = baseRows.map(x => x.date);
+      const priceByDate = new Map(priceRows.map(x => [x.date, Number(x.close)]));
+      const metricByDate = new Map(metricRows.map(x => [x.date, Number(x.value)]));
+      const metricVals = hasMetricSeries ? metricRows.map(x => Number(x.value)).filter(v => !Number.isNaN(v)) : labels.map(() => Number(metric.current)).filter(v => !Number.isNaN(v));
+      const priceVals = priceRows.map(x => Number(x.close)).filter(v => !Number.isNaN(v));
+
+      const metricCandidates = [...metricVals, ...thresholdVals].filter(v => v != null && !Number.isNaN(v));
+      const priceCandidates = priceVals.filter(v => v != null && !Number.isNaN(v));
+      const metricMinRaw = metricCandidates.length ? Math.min(...metricCandidates) : 0;
+      const metricMaxRaw = metricCandidates.length ? Math.max(...metricCandidates) : 1;
+      const priceMinRaw = priceCandidates.length ? Math.min(...priceCandidates) : 0;
+      const priceMaxRaw = priceCandidates.length ? Math.max(...priceCandidates) : 1;
+      const metricPad = Math.max((metricMaxRaw - metricMinRaw) * .12, Math.abs(metricMaxRaw || 1) * .04);
+      const pricePad = Math.max((priceMaxRaw - priceMinRaw) * .12, Math.abs(priceMaxRaw || 1) * .04);
+      const savedAxis = axisRanges[axisKey(item.code, state.metric)] || {};
+      let yMin = savedAxis.leftMin ?? metricMinRaw - metricPad, yMax = savedAxis.leftMax ?? metricMaxRaw + metricPad;
+      let pMin = savedAxis.rightMin ?? priceMinRaw - pricePad, pMax = savedAxis.rightMax ?? priceMaxRaw + pricePad;
+      yMin = Number(yMin); yMax = Number(yMax); pMin = Number(pMin); pMax = Number(pMax);
+      if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMin >= yMax) { yMin = metricMinRaw - metricPad; yMax = metricMaxRaw + metricPad; }
+      if (!Number.isFinite(pMin) || !Number.isFinite(pMax) || pMin >= pMax) { pMin = priceMinRaw - pricePad; pMax = priceMaxRaw + pricePad; }
+      const x = i => pad.l + i / Math.max(labels.length - 1, 1) * plotW;
+      const y = v => pad.t + (1 - (v - yMin) / (yMax - yMin || 1)) * plotH;
+      const yp = v => pad.t + (1 - (v - pMin) / (pMax - pMin || 1)) * plotH;
+      const fmtAxis = v => Math.abs(v) >= 1000 ? Math.round(v).toLocaleString("zh-CN") : Number(v).toFixed(2).replace(/\.00$/, "");
+
+      ctx.strokeStyle = "#e6eaee"; ctx.fillStyle = "#68717b"; ctx.font = "12px Microsoft YaHei"; ctx.lineWidth = 1;
+      for (let i = 0; i <= 5; i++) {
+        const gy = pad.t + plotH / 5 * i;
+        const mv = yMax - (yMax - yMin) / 5 * i;
+        const pv = pMax - (pMax - pMin) / 5 * i;
+        ctx.beginPath(); ctx.moveTo(pad.l, gy); ctx.lineTo(w - pad.r, gy); ctx.stroke();
+        ctx.textAlign = "right"; ctx.fillText(fmtAxis(mv), pad.l - 10, gy + 4);
+        ctx.textAlign = "left"; ctx.fillText(fmtAxis(pv), w - pad.r + 10, gy + 4);
+      }
+      ctx.strokeStyle = "#ccd3da";
+      ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, pad.t + plotH); ctx.lineTo(w - pad.r, pad.t + plotH); ctx.lineTo(w - pad.r, pad.t); ctx.stroke();
+
+      const xByDate = new Map(labels.map((d, i) => [d, x(i)]));
+      const dateToTime = d => new Date(d).getTime();
+      const startTime = dateToTime(labels[0] || "");
+      const endTime = dateToTime(labels[labels.length - 1] || "");
+      const xByMetricDate = d => {
+        if (xByDate.has(d)) return xByDate.get(d);
+        const t = dateToTime(d);
+        if (!Number.isFinite(t) || !Number.isFinite(startTime) || !Number.isFinite(endTime) || startTime === endTime) return null;
+        if (t < startTime || t > endTime) return null;
+        return pad.l + (t - startTime) / (endTime - startTime) * plotW;
+      };
+      const metricSeriesForDraw = hasMetricSeries
+        ? metricRows.map(row => ({ x: xByMetricDate(row.date), y: y(Number(row.value)), ok: xByMetricDate(row.date) != null && row.value != null }))
+        : labels.map((d, i) => ({ x: x(i), y: y(Number(metric.current)), ok: metric.current != null }));
+      if (hasMetric) {
+        ctx.beginPath();
+        metricSeriesForDraw.forEach((p, i) => { if (!p.ok) return; i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
+        if (hasMetricSeries && metricSeriesForDraw.some(p => p.ok)) {
+          const drawn = metricSeriesForDraw.filter(p => p.ok);
+          ctx.lineTo(drawn[drawn.length - 1].x, pad.t + plotH); ctx.lineTo(drawn[0].x, pad.t + plotH); ctx.closePath();
+          ctx.fillStyle = "rgba(92,181,196,.36)"; ctx.fill();
+        }
+        ctx.beginPath();
+        metricSeriesForDraw.forEach((p, i) => { if (!p.ok) return; i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
+        ctx.strokeStyle = "rgba(92,181,196,.95)"; ctx.lineWidth = 2.2; ctx.stroke();
+      }
+
+      [["危险值", metric.danger, "#b9322b"], ["中位数", metric.median, "#7d8791"], ["机会值", metric.opportunity, "#32945e"]].forEach(([label, value, color]) => {
+        if (value == null) return;
+        const yy = y(Number(value));
+        ctx.beginPath(); ctx.setLineDash([8, 7]); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.moveTo(pad.l, yy); ctx.lineTo(w - pad.r, yy); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = color; ctx.textAlign = "right"; ctx.fillText(label, w - pad.r - 8, yy - 6);
+      });
+
+      if (hasPrice) {
+        let started = false;
+        ctx.beginPath();
+        labels.forEach((d, i) => {
+          const value = priceByDate.get(d);
+          if (value == null) return;
+          started ? ctx.lineTo(x(i), yp(value)) : ctx.moveTo(x(i), yp(value));
+          started = true;
+        });
+        ctx.strokeStyle = "#326d99"; ctx.lineWidth = 2.5; ctx.stroke();
+      }
+
+      ctx.fillStyle = "#68717b"; ctx.textAlign = "center";
+      const ticks = Math.min(8, labels.length);
+      for (let i = 0; i < ticks; i++) {
+        const idx = Math.round((labels.length - 1) * i / Math.max(ticks - 1, 1));
+        ctx.fillText((labels[idx] || "").slice(2, 7), x(idx), h - 30);
+      }
+      ctx.textAlign = "left";
+      const legendY = h - 10;
+      ctx.fillStyle = "rgba(92,181,196,.9)"; ctx.beginPath(); ctx.arc(pad.l, legendY - 4, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#27313c"; ctx.fillText(metric.label || "估值指标", pad.l + 12, legendY);
+      ctx.strokeStyle = "#326d99"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(pad.l + 110, legendY - 4); ctx.lineTo(pad.l + 142, legendY - 4); ctx.stroke();
+      ctx.fillStyle = "#27313c"; ctx.fillText("指数点位", pad.l + 150, legendY);
+    }
+
+    function renderRules() {
+      const item = state.selected;
+      const rows = rules.filter(r => r.code === item?.code);
+      document.getElementById("rules").innerHTML = rows.length ? rows.map(r => `<div class="rule"><div><strong>${item.metrics[r.metric]?.label || r.metric} ${r.levelText}</strong><br><small>${item.name}</small></div><button class="del" data-id="${r.id}">删除</button></div>`).join("") : `<div class="empty">还没有提醒规则。</div>`;
+      document.querySelectorAll(".del").forEach(btn => btn.onclick = () => { rules = rules.filter(r => String(r.id) !== btn.dataset.id); localStorage.setItem("alertRules", JSON.stringify(rules)); renderRules(); });
+    }
+
+    document.getElementById("search").addEventListener("input", e => {
+      clearTimeout(window.searchTimer);
+      const value = e.target.value.trim();
+      window.searchTimer = setTimeout(() => value.length >= 2 ? search(value).catch(console.error) : loadInitial().catch(console.error), 350);
+    });
+    document.getElementById("search").addEventListener("keydown", e => {
+      if (e.key === "Enter") {
+        const value = e.target.value.trim();
+        if (value.length >= 2) search(value).catch(console.error);
+      }
+    });
+    document.getElementById("searchBtn").onclick = () => {
+      const value = document.getElementById("search").value.trim();
+      if (value.length >= 2) search(value).catch(console.error);
+    };
+    let lastSearchValue = "";
+    setInterval(() => {
+      const value = document.getElementById("search").value.trim();
+      if (value === lastSearchValue) return;
+      lastSearchValue = value;
+      clearTimeout(window.searchTimer);
+      window.searchTimer = setTimeout(() => value.length >= 2 ? search(value).catch(console.error) : loadInitial().catch(console.error), 250);
+    }, 600);
+    document.querySelectorAll(".range").forEach(btn => btn.onclick = () => { state.range = btn.dataset.range; document.querySelectorAll(".range").forEach(x => x.classList.toggle("active", x === btn)); if (state.selected) loadDetail(state.selected.rawCode).catch(console.error); });
+    document.querySelectorAll(".metric").forEach(btn => btn.onclick = () => { state.metric = btn.dataset.metric; document.querySelectorAll(".metric").forEach(x => x.classList.toggle("active", x === btn)); document.getElementById("ruleMetric").value = state.metric; render(); });
+    document.getElementById("thresholdMetric").onchange = fillThresholdForm;
+    document.getElementById("saveFocusMetric").onclick = () => {
+      if (!state.selected) return;
+      const key = document.getElementById("focusMetric").value;
+      if (key) {
+        focusMetrics[state.selected.code] = key;
+        focusMetrics[state.selected.rawCode] = key;
+      } else {
+        delete focusMetrics[state.selected.code];
+        delete focusMetrics[state.selected.rawCode];
+      }
+      localStorage.setItem("focusMetrics", JSON.stringify(focusMetrics));
+      syncWatchlist().catch(console.error);
+      if (key) {
+        state.metric = key;
+        document.querySelectorAll(".metric").forEach(x => x.classList.toggle("active", x.dataset.metric === key));
+        document.getElementById("ruleMetric").value = key;
+      }
+      loadDetail(state.selected.rawCode).catch(console.error);
+    };
+    document.getElementById("saveAxisRange").onclick = () => {
+      if (!state.selected) return;
+      const read = id => {
+        const value = document.getElementById(id).value.trim();
+        return value === "" ? null : Number(value);
+      };
+      const values = {
+        leftMin: read("leftAxisMin"),
+        leftMax: read("leftAxisMax"),
+        rightMin: read("rightAxisMin"),
+        rightMax: read("rightAxisMax"),
+      };
+      if (Object.values(values).some(v => v !== null && Number.isNaN(v))) return;
+      axisRanges[axisKey(state.selected.code, state.metric)] = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== null));
+      localStorage.setItem("axisRanges", JSON.stringify(axisRanges));
+      render();
+    };
+    document.getElementById("saveThresholds").onclick = () => {
+      if (!state.selected) return;
+      const metricKey = document.getElementById("thresholdMetric").value;
+      const values = {
+        danger: Number(document.getElementById("dangerInput").value),
+        median: Number(document.getElementById("medianInput").value),
+        opportunity: Number(document.getElementById("opportunityInput").value)
+      };
+      if ([values.danger, values.median, values.opportunity].some(v => Number.isNaN(v))) return;
+      thresholds[thresholdKey(state.selected.code, metricKey)] = values;
+      localStorage.setItem("valuationThresholds", JSON.stringify(thresholds));
+      render();
+    };
+    document.getElementById("saveBtn").onclick = () => {
+      if (!state.selected) return;
+      saved.has(state.selected.code) ? saved.delete(state.selected.code) : saved.add(state.selected.code);
+      localStorage.setItem("savedIndexes", JSON.stringify([...saved]));
+      syncWatchlist().catch(console.error);
+      render();
+    };
+    document.getElementById("addRule").onclick = () => { if (!state.selected) return; const level = document.getElementById("ruleLevel"); rules.push({ id: Date.now(), code: state.selected.code, metric: document.getElementById("ruleMetric").value, level: level.value, levelText: level.options[level.selectedIndex].text }); localStorage.setItem("alertRules", JSON.stringify(rules)); renderRules(); };
+    const initialQuery = new URLSearchParams(location.search).get("q");
+    if (initialQuery) {
+      document.getElementById("search").value = initialQuery;
+      search(initialQuery).catch(console.error);
+    } else {
+      loadInitial().catch(console.error);
+    }
+  </script>
+</body>
+</html>
