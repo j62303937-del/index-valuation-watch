@@ -5,6 +5,7 @@ import hashlib
 import math
 import os
 import re
+import sqlite3
 import statistics
 import threading
 import time
@@ -24,6 +25,10 @@ CACHE_TTL_SECONDS = 6 * 60 * 60
 QUOTE_CACHE_TTL_SECONDS = 30
 APP_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = APP_DIR / "watchlist-store.json"
+DB_FILE = Path(os.environ.get("INDEX_WATCH_DB", APP_DIR / "index-watch.db"))
+DB_LOCK = threading.Lock()
+REFRESH_LOCK = threading.Lock()
+REFRESH_RUNNING = False
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 
@@ -104,23 +109,156 @@ def cache_set(key: tuple, value):
     return value
 
 
-def load_watchlist_store() -> dict:
-    if not WATCHLIST_FILE.exists():
-        return {"items": [], "snapshots": {}, "lastRefresh": None}
+def db_connect():
+    conn = sqlite3.connect(DB_FILE, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
+
+
+def init_db():
+    with DB_LOCK:
+        with db_connect() as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
+                CREATE TABLE IF NOT EXISTS watch_items (
+                    watch_key TEXT PRIMARY KEY,
+                    raw_code TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    focus TEXT,
+                    range_value TEXT,
+                    sort_order INTEGER DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS watch_snapshots (
+                    watch_key TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT
+                );
+            """)
+
+
+def db_get_metadata(key: str):
+    init_db()
+    with DB_LOCK:
+        with db_connect() as conn:
+            row = conn.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+            return row["value"] if row else None
+
+
+def db_set_metadata(conn, key: str, value):
+    conn.execute(
+        "INSERT INTO metadata(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, "" if value is None else str(value)),
+    )
+
+
+def migrate_json_watchlist_if_needed():
+    if db_get_metadata("json_migrated") == "1" or not WATCHLIST_FILE.exists():
+        return
     try:
         data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
-        return {
-            "items": data.get("items") or [],
-            "snapshots": data.get("snapshots") or {},
-            "lastRefresh": data.get("lastRefresh"),
-        }
     except Exception:
-        return {"items": [], "snapshots": {}, "lastRefresh": None}
+        data = {"items": [], "snapshots": {}, "lastRefresh": None}
+    save_watchlist_store(data, mark_migrated=True)
 
 
-def save_watchlist_store(store: dict) -> dict:
-    WATCHLIST_FILE.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+def load_watchlist_store() -> dict:
+    init_db()
+    if db_get_metadata("json_migrated") != "1" and WATCHLIST_FILE.exists():
+        migrate_json_watchlist_if_needed()
+    with DB_LOCK:
+        with db_connect() as conn:
+            item_rows = conn.execute(
+                "SELECT raw_code, code, name, focus, range_value FROM watch_items ORDER BY sort_order, rowid"
+            ).fetchall()
+            snapshot_rows = conn.execute("SELECT watch_key, payload FROM watch_snapshots").fetchall()
+            meta = conn.execute("SELECT value FROM metadata WHERE key='lastRefresh'").fetchone()
+    items = [{
+        "rawCode": row["raw_code"],
+        "code": row["code"],
+        "name": row["name"],
+        "focus": row["focus"] or "",
+        "range": row["range_value"] or "10",
+    } for row in item_rows]
+    snapshots = {}
+    for row in snapshot_rows:
+        try:
+            snapshots[row["watch_key"]] = json.loads(row["payload"])
+        except Exception:
+            pass
+    return {"items": items, "snapshots": snapshots, "lastRefresh": meta["value"] if meta else None}
+
+
+def save_watchlist_store(store: dict, mark_migrated: bool = False) -> dict:
+    init_db()
+    items = store.get("items") or []
+    snapshots = store.get("snapshots") or {}
+    with DB_LOCK:
+        with db_connect() as conn:
+            conn.execute("DELETE FROM watch_items")
+            for idx, row in enumerate(items):
+                key = watch_key(row.get("rawCode") or row.get("code"), row.get("focus"))
+                conn.execute(
+                    "INSERT INTO watch_items(watch_key, raw_code, code, name, focus, range_value, sort_order) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                    (key, row.get("rawCode") or "", row.get("code") or "", row.get("name") or "", row.get("focus") or "", str(row.get("range") or "10"), idx),
+                )
+            conn.execute("DELETE FROM watch_snapshots")
+            now = datetime.now(BEIJING_TZ).isoformat(timespec="seconds")
+            for key, payload in snapshots.items():
+                conn.execute(
+                    "INSERT INTO watch_snapshots(watch_key, payload, updated_at) VALUES(?, ?, ?)",
+                    (key, json.dumps(payload, ensure_ascii=False), payload.get("cachedAt") or now if isinstance(payload, dict) else now),
+                )
+            db_set_metadata(conn, "lastRefresh", store.get("lastRefresh"))
+            if mark_migrated:
+                db_set_metadata(conn, "json_migrated", "1")
     return store
+
+
+def load_app_settings() -> dict:
+    init_db()
+    with DB_LOCK:
+        with db_connect() as conn:
+            rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
+    defaults = {"thresholds": {}, "axisRanges": {}, "rules": []}
+    for row in rows:
+        try:
+            defaults[row["key"]] = json.loads(row["value"])
+        except Exception:
+            pass
+    return defaults
+
+
+def save_app_settings(settings: dict) -> dict:
+    init_db()
+    allowed = {"thresholds", "axisRanges", "rules"}
+    now = datetime.now(BEIJING_TZ).isoformat(timespec="seconds")
+    with DB_LOCK:
+        with db_connect() as conn:
+            for key in allowed:
+                if key in settings:
+                    conn.execute(
+                        "INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                        (key, json.dumps(settings[key], ensure_ascii=False), now),
+                    )
+    return load_app_settings()
+
+
+def refresh_settings_cache_timestamp():
+    init_db()
+    with DB_LOCK:
+        with db_connect() as conn:
+            db_set_metadata(conn, "settingsLastRefresh", datetime.now(BEIJING_TZ).isoformat(timespec="seconds"))
 
 
 def watch_key(raw_code: str, focus_metric: str | None) -> str:
@@ -170,36 +308,80 @@ def refresh_watch_item(row: dict, quotes: dict | None = None) -> dict | None:
 
 
 def refresh_watchlist_cache() -> dict:
-    store = load_watchlist_store()
-    items = sanitize_watch_items(store.get("items") or [])
-    snapshots = {}
+    global REFRESH_RUNNING
+    with REFRESH_LOCK:
+        if REFRESH_RUNNING:
+            return load_watchlist_store()
+        REFRESH_RUNNING = True
     try:
-        quotes = eastmoney_quotes()
-    except Exception:
-        quotes = {}
-    for row in items:
+        store = load_watchlist_store()
+        items = sanitize_watch_items(store.get("items") or [])
+        snapshots = dict(store.get("snapshots") or {})
         try:
-            snapshot = refresh_watch_item(row, quotes)
-            snapshots[watch_key(row["rawCode"], row.get("focus"))] = snapshot
-        except Exception as exc:
-            old = (store.get("snapshots") or {}).get(watch_key(row["rawCode"], row.get("focus"))) or {}
-            old["sourceNote"] = f"Scheduled refresh failed: {type(exc).__name__}: {exc}"
-            snapshots[watch_key(row["rawCode"], row.get("focus"))] = old
-        save_watchlist_store({
+            quotes = eastmoney_quotes()
+        except Exception:
+            quotes = {}
+        for row in items:
+            try:
+                snapshot = refresh_watch_item(row, quotes)
+                snapshots[watch_key(row["rawCode"], row.get("focus"))] = snapshot
+            except Exception as exc:
+                old = (store.get("snapshots") or {}).get(watch_key(row["rawCode"], row.get("focus"))) or {}
+                old["sourceNote"] = f"Scheduled refresh failed: {type(exc).__name__}: {exc}"
+                snapshots[watch_key(row["rawCode"], row.get("focus"))] = old
+            save_watchlist_store({
+                "items": items,
+                "snapshots": snapshots,
+                "lastRefresh": datetime.now(BEIJING_TZ).isoformat(timespec="seconds"),
+            })
+        refresh_settings_cache_timestamp()
+        store = {
             "items": items,
             "snapshots": snapshots,
             "lastRefresh": datetime.now(BEIJING_TZ).isoformat(timespec="seconds"),
-        })
-    store = {
-        "items": items,
-        "snapshots": snapshots,
-        "lastRefresh": datetime.now(BEIJING_TZ).isoformat(timespec="seconds"),
-    }
-    return save_watchlist_store(store)
+        }
+        return save_watchlist_store(store)
+    finally:
+        with REFRESH_LOCK:
+            REFRESH_RUNNING = False
 
 
 def refresh_watchlist_cache_async():
     threading.Thread(target=refresh_watchlist_cache, daemon=True).start()
+
+
+def expected_refresh_date(now: datetime | None = None) -> date:
+    now = now or datetime.now(BEIJING_TZ)
+    expected = now.date()
+    if now.hour < 20:
+        expected = expected - timedelta(days=1)
+    return expected
+
+
+def parse_refresh_date(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).astimezone(BEIJING_TZ).date()
+    except Exception:
+        try:
+            return datetime.fromisoformat(value).date()
+        except Exception:
+            return None
+
+
+def refresh_watchlist_if_due(async_run: bool = True) -> bool:
+    store = load_watchlist_store()
+    if not store.get("items"):
+        return False
+    last_day = parse_refresh_date(store.get("lastRefresh"))
+    if last_day is not None and last_day >= expected_refresh_date():
+        return False
+    if async_run:
+        refresh_watchlist_cache_async()
+    else:
+        refresh_watchlist_cache()
+    return True
 
 
 def watchlist_scheduler():
@@ -213,6 +395,7 @@ def watchlist_scheduler():
 
 
 def start_watchlist_scheduler():
+    refresh_watchlist_if_due(async_run=True)
     threading.Thread(target=watchlist_scheduler, daemon=True).start()
 
 
@@ -1144,6 +1327,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            refresh_watchlist_if_due(async_run=True)
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == "/":
                 self.path = "/index-valuation-watch.html"
@@ -1156,6 +1340,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.write_json(self.handle_index(urllib.parse.parse_qs(parsed.query)))
             if parsed.path == "/api/watchlist":
                 return self.write_json(self.handle_watchlist())
+            if parsed.path == "/api/settings":
+                return self.write_json(self.handle_settings())
             super().do_GET()
         except Exception as exc:
             return self.write_json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -1165,6 +1351,8 @@ class Handler(SimpleHTTPRequestHandler):
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == "/api/watchlist":
                 return self.write_json(self.handle_watchlist_post())
+            if parsed.path == "/api/settings":
+                return self.write_json(self.handle_settings_post())
             return self.write_json({"ok": False, "error": "Unknown POST endpoint"})
         except Exception as exc:
             return self.write_json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -1236,6 +1424,9 @@ class Handler(SimpleHTTPRequestHandler):
                 rows.append(base)
         return {"ok": True, "data": {"items": items, "snapshots": rows, "lastRefresh": store.get("lastRefresh")}}
 
+    def handle_settings(self) -> dict:
+        return {"ok": True, "data": load_app_settings()}
+
     def handle_watchlist_post(self) -> dict:
         length = int(self.headers.get("Content-Length") or "0")
         payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
@@ -1250,6 +1441,16 @@ class Handler(SimpleHTTPRequestHandler):
         save_watchlist_store(store)
         refreshed = refresh_watchlist_cache()
         return {"ok": True, "data": {"items": refreshed.get("items") or items, "lastRefresh": refreshed.get("lastRefresh")}}
+
+    def handle_settings_post(self) -> dict:
+        length = int(self.headers.get("Content-Length") or "0")
+        payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        settings = save_app_settings({
+            "thresholds": payload.get("thresholds", {}),
+            "axisRanges": payload.get("axisRanges", {}),
+            "rules": payload.get("rules", []),
+        })
+        return {"ok": True, "data": settings}
 
     def write_json(self, payload: dict):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
