@@ -25,4 +25,10 @@ After deployment, Render will provide a public HTTPS URL that can be opened from
 
 ## Notes
 
-Watchlist cache is stored in `watchlist-store.json` on the server filesystem. On free/ephemeral cloud instances this file may reset when the service restarts.
+Watchlists, cached valuation snapshots, thresholds, axis ranges, and alert rules are stored in SQLite. By default the database file is `index-watch.db` beside `server.py`.
+
+Set `INDEX_WATCH_DB` to use another database path, for example a mounted persistent disk path on Render.
+
+The app schedules a Beijing-time 20:00 daily refresh for saved indexes. If the cloud service is asleep or restarted and misses 20:00, the next startup or page visit will detect the missed refresh and run a background catch-up update.
+
+Render free instances may sleep and may use ephemeral storage. For durable long-term settings, attach a persistent disk or migrate the database to managed Postgres.
