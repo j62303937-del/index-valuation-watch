@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+cloudflared.exe
+.tools/
+watchlist-store.json
+index-valuation-watch-cloud.zip
