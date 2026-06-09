@@ -1757,8 +1757,16 @@ class Handler(SimpleHTTPRequestHandler):
 
     def handle_test_alerts(self) -> dict:
         store = load_watchlist_store()
+        if not (store.get("snapshots") or {}) and (store.get("items") or []):
+            store = refresh_watchlist_cache()
         settings = load_app_settings()
         results = []
+        if not (store.get("items") or []) and not (store.get("snapshots") or {}):
+            results.append({
+                "matched": False,
+                "sent": False,
+                "error": "No watchlist items are stored on this server. Configure persistent backup or save favorites again.",
+            })
         for snapshot in (store.get("snapshots") or {}).values():
             if isinstance(snapshot, dict):
                 try:
