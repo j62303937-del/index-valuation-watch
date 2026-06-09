@@ -32,7 +32,11 @@ DB_LOCK = threading.Lock()
 REFRESH_LOCK = threading.Lock()
 REFRESH_RUNNING = False
 BEIJING_TZ = timezone(timedelta(hours=8))
-APP_VERSION = "2026-06-09-alert-retry-2"
+APP_VERSION = "2026-06-09-github-backup-1"
+GITHUB_BACKUP_TOKEN = os.environ.get("GITHUB_BACKUP_TOKEN", "").strip()
+GITHUB_BACKUP_REPO = os.environ.get("GITHUB_BACKUP_REPO", "j62303937-del/index-valuation-watch").strip()
+GITHUB_BACKUP_PATH = os.environ.get("GITHUB_BACKUP_PATH", "cloud-data/index-watch-backup.json").strip()
+GITHUB_BACKUP_BRANCH = os.environ.get("GITHUB_BACKUP_BRANCH", "main").strip()
 
 
 INDEXES = [
@@ -209,7 +213,90 @@ def migrate_json_watchlist_if_needed():
     save_watchlist_store(data, mark_migrated=True)
 
 
-def load_watchlist_store() -> dict:
+def github_backup_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {GITHUB_BACKUP_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "index-valuation-watch",
+    }
+
+
+def github_backup_enabled() -> bool:
+    return bool(GITHUB_BACKUP_TOKEN and GITHUB_BACKUP_REPO and GITHUB_BACKUP_PATH)
+
+
+def github_backup_get() -> dict | None:
+    if not github_backup_enabled():
+        return None
+    url = f"https://api.github.com/repos/{GITHUB_BACKUP_REPO}/contents/{GITHUB_BACKUP_PATH}?ref={urllib.parse.quote(GITHUB_BACKUP_BRANCH)}"
+    resp = requests.get(url, headers=github_backup_headers(), timeout=20)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    payload = resp.json()
+    content = payload.get("content") or ""
+    if not content:
+        return None
+    data = json.loads(__import__("base64").b64decode(content).decode("utf-8"))
+    data["_sha"] = payload.get("sha")
+    return data
+
+
+def github_backup_put(data: dict):
+    if not github_backup_enabled():
+        return
+    import base64
+    current_sha = None
+    try:
+        current = github_backup_get()
+        current_sha = current.get("_sha") if current else None
+    except Exception:
+        current_sha = None
+    payload = {
+        "message": "Update cloud watch data",
+        "branch": GITHUB_BACKUP_BRANCH,
+        "content": base64.b64encode(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).decode("ascii"),
+    }
+    if current_sha:
+        payload["sha"] = current_sha
+    url = f"https://api.github.com/repos/{GITHUB_BACKUP_REPO}/contents/{GITHUB_BACKUP_PATH}"
+    resp = requests.put(url, headers=github_backup_headers(), json=payload, timeout=30)
+    resp.raise_for_status()
+
+
+def github_backup_restore(kind: str) -> dict | None:
+    try:
+        backup = github_backup_get()
+    except Exception:
+        return None
+    if not backup:
+        return None
+    if kind == "watchlist":
+        data = backup.get("watchlist") or {}
+        if data.get("items") or data.get("snapshots"):
+            save_watchlist_store(data, backup=False)
+            return data
+    if kind == "settings":
+        data = backup.get("settings") or {}
+        if data.get("thresholds") or data.get("axisRanges") or data.get("rules"):
+            save_app_settings(data, backup=False)
+            return data
+    return None
+
+
+def github_backup_save():
+    if not github_backup_enabled():
+        return
+    data = {
+        "version": APP_VERSION,
+        "updatedAt": datetime.now(BEIJING_TZ).isoformat(timespec="seconds"),
+        "watchlist": load_watchlist_store(allow_restore=False),
+        "settings": load_app_settings(allow_restore=False),
+    }
+    github_backup_put(data)
+
+
+def load_watchlist_store(allow_restore: bool = True) -> dict:
     init_db()
     if db_get_metadata("json_migrated") != "1" and WATCHLIST_FILE.exists():
         migrate_json_watchlist_if_needed()
@@ -233,10 +320,15 @@ def load_watchlist_store() -> dict:
             snapshots[row["watch_key"]] = json.loads(row["payload"])
         except Exception:
             pass
-    return {"items": items, "snapshots": snapshots, "lastRefresh": meta["value"] if meta else None}
+    store = {"items": items, "snapshots": snapshots, "lastRefresh": meta["value"] if meta else None}
+    if allow_restore and not items and not snapshots:
+        restored = github_backup_restore("watchlist")
+        if restored:
+            return load_watchlist_store(allow_restore=False)
+    return store
 
 
-def save_watchlist_store(store: dict, mark_migrated: bool = False) -> dict:
+def save_watchlist_store(store: dict, mark_migrated: bool = False, backup: bool = True) -> dict:
     init_db()
     items = store.get("items") or []
     snapshots = store.get("snapshots") or {}
@@ -259,10 +351,15 @@ def save_watchlist_store(store: dict, mark_migrated: bool = False) -> dict:
             db_set_metadata(conn, "lastRefresh", store.get("lastRefresh"))
             if mark_migrated:
                 db_set_metadata(conn, "json_migrated", "1")
+    if backup:
+        try:
+            github_backup_save()
+        except Exception:
+            pass
     return store
 
 
-def load_app_settings() -> dict:
+def load_app_settings(allow_restore: bool = True) -> dict:
     init_db()
     with DB_LOCK:
         with db_connect() as conn:
@@ -273,10 +370,18 @@ def load_app_settings() -> dict:
             defaults[row["key"]] = json.loads(row["value"])
         except Exception:
             pass
+    if allow_restore and not has_meaningful_settings(defaults):
+        restored = github_backup_restore("settings")
+        if restored:
+            return load_app_settings(allow_restore=False)
     return defaults
 
 
-def save_app_settings(settings: dict) -> dict:
+def has_meaningful_settings(settings: dict) -> bool:
+    return bool((settings.get("thresholds") or {}) or (settings.get("axisRanges") or {}) or (settings.get("rules") or []))
+
+
+def save_app_settings(settings: dict, backup: bool = True) -> dict:
     init_db()
     allowed = {"thresholds", "axisRanges", "rules"}
     now = datetime.now(BEIJING_TZ).isoformat(timespec="seconds")
@@ -288,7 +393,13 @@ def save_app_settings(settings: dict) -> dict:
                         "INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                         (key, json.dumps(settings[key], ensure_ascii=False), now),
                     )
-    return load_app_settings()
+    saved_settings = load_app_settings(allow_restore=False)
+    if backup:
+        try:
+            github_backup_save()
+        except Exception:
+            pass
+    return saved_settings
 
 
 def refresh_settings_cache_timestamp():
