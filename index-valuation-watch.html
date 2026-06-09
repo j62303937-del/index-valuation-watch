@@ -18,6 +18,7 @@
     .list { display: flex; flex-direction: column; gap: 8px; }
     .item { border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.05); color: #fff; border-radius: 8px; padding: 12px; text-align: left; cursor: pointer; }
     .item.active { border-color: #2f9db4; background: rgba(47,157,180,.24); }
+    .item.loading { opacity: .72; pointer-events: none; }
     .item strong { display: block; }
     .item small { display: block; color: rgba(255,255,255,.65); margin-top: 4px; }
     .mini { display: flex; justify-content: space-between; margin-top: 9px; color: rgba(255,255,255,.82); font-size: 13px; }
@@ -36,6 +37,12 @@
     h2 { margin: 0; font-size: 18px; }
     .chart-wrap { height: 430px; position: relative; }
     canvas { width: 100%; height: 100%; }
+    .loading-mask { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; gap: 12px; background: rgba(255,255,255,.78); color: #27313c; font-weight: 800; z-index: 2; }
+    .loading-mask.show { display: flex; }
+    .spinner { width: 26px; height: 26px; border: 3px solid #cbd2da; border-top-color: #2f9db4; border-radius: 50%; animation: spin .85s linear infinite; }
+    .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 10px 14px; border-radius: 7px; background: #17202a; color: #fff; font-size: 14px; box-shadow: 0 8px 24px rgba(21,33,45,.25); opacity: 0; pointer-events: none; transition: opacity .18s ease; z-index: 10; }
+    .toast.show { opacity: 1; }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-top: 14px; }
     .stat { border: 1px solid #e2e6ea; border-radius: 7px; padding: 10px; background: #fbfcfd; }
     .stat span { display: block; color: #697582; font-size: 12px; margin-bottom: 6px; }
@@ -89,7 +96,7 @@
           </div>
           <div class="panel chart-panel">
             <div class="chart-head"><h2 id="chartTitle">市盈率TTM</h2><span id="statusTag" class="pill mid"></span></div>
-            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <div class="chart-wrap"><canvas id="chart"></canvas><div id="loadingMask" class="loading-mask"><span class="spinner"></span><span id="loadingText">加载中...</span></div></div>
             <div id="stats" class="stats"></div>
           </div>
         </section>
@@ -131,9 +138,11 @@
       </div>
     </main>
   </div>
+  <div id="toast" class="toast"></div>
   <script>
-    const state = { items: [], savedItems: [], selected: null, range: "10", metric: "pe", searching: false };
+    const state = { items: [], savedItems: [], selected: null, range: "10", metric: "pe", searching: false, loading: false, loadingCode: "" };
     const saved = new Set(JSON.parse(localStorage.getItem("savedIndexes") || "[]"));
+    let savedMeta = JSON.parse(localStorage.getItem("savedIndexMeta") || "{}");
     let rules = JSON.parse(localStorage.getItem("alertRules") || "[]");
     let thresholds = JSON.parse(localStorage.getItem("valuationThresholds") || "{}");
     let focusMetrics = JSON.parse(localStorage.getItem("focusMetrics") || "{}");
@@ -143,6 +152,33 @@
     const text = v => v == null || v === "" || (typeof v === "number" && Number.isNaN(v)) ? "暂无" : String(v);
     const pct = v => v == null ? "暂无" : `${v}%`;
     const money = v => v == null ? "暂无" : Number(v).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+
+    function notify(message) {
+      const toast = document.getElementById("toast");
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.add("show");
+      clearTimeout(window.toastTimer);
+      window.toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+    }
+
+    function setLoading(code, message = "加载中...") {
+      state.loading = Boolean(code);
+      state.loadingCode = code || "";
+      const mask = document.getElementById("loadingMask");
+      const textNode = document.getElementById("loadingText");
+      if (textNode) textNode.textContent = message;
+      if (mask) mask.classList.toggle("show", state.loading);
+      renderLoadingState();
+    }
+
+    function renderLoadingState() {
+      document.querySelectorAll(".item").forEach(btn => {
+        const isLoading = state.loading && btn.dataset.code === state.loadingCode;
+        btn.classList.toggle("loading", isLoading);
+        btn.disabled = Boolean(state.loading);
+      });
+    }
 
     function thresholdKey(code, metricKey) {
       return `${code}:${metricKey}`;
@@ -231,7 +267,7 @@
     function watchItemsPayload() {
       const known = [...state.items, state.selected].filter(Boolean);
       return [...saved].map(code => {
-        const item = known.find(x => x.code === code || x.rawCode === code) || { code, rawCode: code, name: code };
+        const item = known.find(x => x.code === code || x.rawCode === code) || savedMeta[code] || { code, rawCode: code, name: code };
         return {
           code: item.code || code,
           rawCode: item.rawCode || code,
@@ -245,6 +281,16 @@
     async function syncWatchlist() {
       await postApi("/api/watchlist", { items: watchItemsPayload() });
       await loadWatchlist();
+    }
+
+    async function syncWatchlistWithNotice(message = "已保存到云端") {
+      try {
+        await syncWatchlist();
+        notify(message);
+      } catch (e) {
+        notify(`保存失败：${e.message}`);
+        throw e;
+      }
     }
 
     function hasSettings(data) {
@@ -300,6 +346,15 @@
         console.warn(e);
       }
       const data = await api("/api/indices");
+      if (!(watchData.items || []).length && saved.size) {
+        state.items = mergeItems(Object.values(savedMeta || {}), data);
+        try {
+          await syncWatchlist();
+          watchData = await loadWatchlist();
+        } catch (e) {
+          console.warn(e);
+        }
+      }
       if (document.getElementById("search").value.trim().length >= 2) return;
       state.items = mergeItems(watchData.snapshots || [], data);
       renderList();
@@ -315,19 +370,31 @@
     }
 
     async function loadDetail(rawCode) {
-      const focusParam = focusedMetricFor(rawCode);
-      const focusQuery = focusParam ? `&focus=${encodeURIComponent(focusParam)}` : "";
-      state.selected = await api(`/api/index?code=${encodeURIComponent(rawCode)}&range=${encodeURIComponent(state.range)}${focusQuery}`);
-      const focus = focusedMetricFor(state.selected.rawCode) || focusedMetricKey(state.selected.code);
-      if (focus) {
-        state.metric = focus;
-        document.querySelectorAll(".metric").forEach(x => x.classList.toggle("active", x.dataset.metric === focus));
-        document.getElementById("ruleMetric").value = focus;
+      if (state.loading) return;
+      setLoading(rawCode, "正在加载指数数据...");
+      try {
+        const focusParam = focusedMetricFor(rawCode);
+        const focusQuery = focusParam ? `&focus=${encodeURIComponent(focusParam)}` : "";
+        state.selected = await api(`/api/index?code=${encodeURIComponent(rawCode)}&range=${encodeURIComponent(state.range)}${focusQuery}`);
+        savedMeta[state.selected.code] = { code: state.selected.code, rawCode: state.selected.rawCode, name: state.selected.name };
+        savedMeta[state.selected.rawCode] = { code: state.selected.code, rawCode: state.selected.rawCode, name: state.selected.name };
+        localStorage.setItem("savedIndexMeta", JSON.stringify(savedMeta));
+        const focus = focusedMetricFor(state.selected.rawCode) || focusedMetricKey(state.selected.code);
+        if (focus) {
+          state.metric = focus;
+          document.querySelectorAll(".metric").forEach(x => x.classList.toggle("active", x.dataset.metric === focus));
+          document.getElementById("ruleMetric").value = focus;
+        }
+        const idx = state.items.findIndex(x => x.rawCode === state.selected.rawCode || x.code === state.selected.code);
+        if (idx >= 0) state.items[idx] = state.selected;
+        else state.items.unshift(state.selected);
+        render();
+      } catch (e) {
+        notify(`加载失败：${e.message}`);
+        throw e;
+      } finally {
+        setLoading("");
       }
-      const idx = state.items.findIndex(x => x.rawCode === state.selected.rawCode || x.code === state.selected.code);
-      if (idx >= 0) state.items[idx] = state.selected;
-      else state.items.unshift(state.selected);
-      render();
     }
 
     function renderList() {
@@ -341,7 +408,8 @@
         const key = focusMetrics[item.code] || focusMetrics[item.rawCode] || "pe";
         const metric = item.metrics?.[key] || {};
         const [label, cls] = statusFor(key, metric);
-        return `<button class="item ${state.selected?.code === item.code ? "active" : ""}" data-code="${item.rawCode || item.code}">
+        const itemCode = item.rawCode || item.code;
+        return `<button class="item ${state.selected?.code === item.code ? "active" : ""} ${state.loadingCode === itemCode ? "loading" : ""}" data-code="${itemCode}" ${state.loading ? "disabled" : ""}>
           <strong>${item.name}${saved.has(item.code) ? " \u2605" : ""}</strong><small>${item.code}</small>
           <div class="mini"><span>${metric.label || key} ${text(metric.current)}</span><span class="pill ${cls}">${label}</span></div>
         </button>`;
@@ -357,7 +425,8 @@
         const key = focusMetrics[item.code] || focusMetrics[item.rawCode] || "pe";
         const metric = item.metrics?.[key] || {};
         const [label, cls] = statusFor(key, metric);
-        return `<button class="item ${state.selected?.code === item.code ? "active" : ""}" data-code="${item.rawCode || item.code}">
+        const itemCode = item.rawCode || item.code;
+        return `<button class="item ${state.selected?.code === item.code ? "active" : ""} ${state.loadingCode === itemCode ? "loading" : ""}" data-code="${itemCode}" ${state.loading ? "disabled" : ""}>
           <strong>${item.name}</strong><small>${item.code}</small>
           <div class="mini"><span>${metric.label || key} ${text(metric.current)}</span><span class="pill ${cls}">${label}</span></div>
         </button>`;
@@ -432,7 +501,7 @@
       canvas.height = Math.floor(box.height * dpr);
       const ctx = canvas.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const w = box.width, h = box.height, pad = { l: 58, r: 82, t: 20, b: 78 };
+      const w = box.width, h = box.height, pad = { l: 58, r: 82, t: 20, b: 104 };
       const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
@@ -534,10 +603,10 @@
       const ticks = Math.min(8, labels.length);
       for (let i = 0; i < ticks; i++) {
         const idx = Math.round((labels.length - 1) * i / Math.max(ticks - 1, 1));
-        ctx.fillText((labels[idx] || "").slice(2, 7), x(idx), h - 30);
+        ctx.fillText((labels[idx] || "").slice(2, 7), x(idx), h - 70);
       }
       ctx.textAlign = "left";
-      let legendX = pad.l, legendY = h - 34;
+      let legendX = pad.l, legendY = h - 36;
       const nextLegend = width => {
         if (legendX + width > w - pad.r) {
           legendX = pad.l;
@@ -569,7 +638,7 @@
       const item = state.selected;
       const rows = rules.filter(r => r.code === item?.code);
       document.getElementById("rules").innerHTML = rows.length ? rows.map(r => `<div class="rule"><div><strong>${item.metrics[r.metric]?.label || r.metric} ${r.levelText}</strong><br><small>${item.name}</small></div><button class="del" data-id="${r.id}">删除</button></div>`).join("") : `<div class="empty">还没有提醒规则。</div>`;
-      document.querySelectorAll(".del").forEach(btn => btn.onclick = () => { rules = rules.filter(r => String(r.id) !== btn.dataset.id); localStorage.setItem("alertRules", JSON.stringify(rules)); syncSettings().catch(console.error); renderRules(); });
+      document.querySelectorAll(".del").forEach(btn => btn.onclick = () => { rules = rules.filter(r => String(r.id) !== btn.dataset.id); localStorage.setItem("alertRules", JSON.stringify(rules)); syncSettings().then(() => notify("提醒规则已删除")).catch(e => notify(`保存失败：${e.message}`)); renderRules(); });
     }
 
     document.getElementById("search").addEventListener("input", e => {
@@ -609,7 +678,7 @@
         delete focusMetrics[state.selected.rawCode];
       }
       localStorage.setItem("focusMetrics", JSON.stringify(focusMetrics));
-      syncWatchlist().catch(console.error);
+      syncWatchlistWithNotice("重点指标已保存到云端").catch(console.error);
       if (key) {
         state.metric = key;
         document.querySelectorAll(".metric").forEach(x => x.classList.toggle("active", x.dataset.metric === key));
@@ -632,7 +701,7 @@
       if (Object.values(values).some(v => v !== null && Number.isNaN(v))) return;
       axisRanges[axisKey(state.selected.code, state.metric)] = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== null));
       localStorage.setItem("axisRanges", JSON.stringify(axisRanges));
-      syncSettings().catch(console.error);
+      syncSettings().then(() => notify("坐标范围已保存")).catch(e => notify(`保存失败：${e.message}`));
       render();
     };
     document.getElementById("saveThresholds").onclick = () => {
@@ -646,17 +715,33 @@
       if ([values.danger, values.median, values.opportunity].some(v => Number.isNaN(v))) return;
       thresholds[thresholdKey(state.selected.code, metricKey)] = values;
       localStorage.setItem("valuationThresholds", JSON.stringify(thresholds));
-      syncSettings().catch(console.error);
+      syncSettings().then(() => notify("估值线已保存")).catch(e => notify(`保存失败：${e.message}`));
       render();
     };
     document.getElementById("saveBtn").onclick = () => {
       if (!state.selected) return;
-      saved.has(state.selected.code) ? saved.delete(state.selected.code) : saved.add(state.selected.code);
+      const isSaved = saved.has(state.selected.code);
+      if (isSaved) {
+        saved.delete(state.selected.code);
+        saved.delete(state.selected.rawCode);
+      } else {
+        saved.add(state.selected.code);
+        savedMeta[state.selected.code] = { code: state.selected.code, rawCode: state.selected.rawCode, name: state.selected.name };
+        savedMeta[state.selected.rawCode] = { code: state.selected.code, rawCode: state.selected.rawCode, name: state.selected.name };
+      }
       localStorage.setItem("savedIndexes", JSON.stringify([...saved]));
-      syncWatchlist().catch(console.error);
+      localStorage.setItem("savedIndexMeta", JSON.stringify(savedMeta));
+      syncWatchlistWithNotice(isSaved ? "已取消收藏" : "已收藏并同步到云端").catch(console.error);
       render();
     };
-    document.getElementById("addRule").onclick = () => { if (!state.selected) return; const level = document.getElementById("ruleLevel"); rules.push({ id: Date.now(), code: state.selected.code, metric: document.getElementById("ruleMetric").value, level: level.value, levelText: level.options[level.selectedIndex].text }); localStorage.setItem("alertRules", JSON.stringify(rules)); syncSettings().catch(console.error); renderRules(); };
+    document.getElementById("addRule").onclick = () => {
+      if (!state.selected) return;
+      const level = document.getElementById("ruleLevel");
+      rules.push({ id: Date.now(), code: state.selected.code, metric: document.getElementById("ruleMetric").value, level: level.value, levelText: level.options[level.selectedIndex].text });
+      localStorage.setItem("alertRules", JSON.stringify(rules));
+      syncSettings().then(() => notify("提醒规则已保存到云端")).catch(e => notify(`保存失败：${e.message}`));
+      renderRules();
+    };
     document.getElementById("testAlerts").onclick = async () => {
       const btn = document.getElementById("testAlerts");
       const old = btn.textContent;
