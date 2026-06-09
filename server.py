@@ -421,14 +421,42 @@ def email_alert_config() -> dict:
     }
 
 
+def pushplus_token() -> str:
+    return os.environ.get("PUSHPLUS_TOKEN", "").strip()
+
+
+def pushplus_ready() -> bool:
+    return bool(pushplus_token())
+
+
 def email_alert_ready() -> bool:
     cfg = email_alert_config()
-    return bool(cfg["host"] and cfg["sender"] and cfg["to"])
+    return bool(cfg["host"] and cfg["sender"] and cfg["to"]) or pushplus_ready()
+
+
+def send_pushplus_alert(subject: str, body: str) -> dict:
+    token = pushplus_token()
+    if not token:
+        return {"sent": False, "error": "PushPlus is not configured"}
+    resp = requests.post(
+        "https://www.pushplus.plus/send",
+        json={"token": token, "title": subject, "content": body, "template": "txt"},
+        timeout=20,
+    )
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"raw": resp.text}
+    if resp.ok and str(data.get("code")) in {"200", "0"}:
+        return {"sent": True, "channel": "pushplus"}
+    return {"sent": False, "error": f"PushPlus failed: HTTP {resp.status_code} {data}"}
 
 
 def send_email_alert(subject: str, body: str) -> dict:
     cfg = email_alert_config()
-    if not email_alert_ready():
+    if not (cfg["host"] and cfg["sender"] and cfg["to"]):
+        if pushplus_ready():
+            return send_pushplus_alert(subject, body)
         return {"sent": False, "error": "Email alert is not configured"}
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -442,10 +470,17 @@ def send_email_alert(subject: str, body: str) -> dict:
             retry_cfg = dict(cfg)
             retry_cfg["port"] = 587
             retry_cfg["tls"] = False
-            send_smtp_message(retry_cfg, msg)
+            try:
+                send_smtp_message(retry_cfg, msg)
+            except Exception as retry_exc:
+                if pushplus_ready():
+                    return send_pushplus_alert(subject, body + f"\n\nSMTP failed: {type(retry_exc).__name__}: {retry_exc}")
+                raise retry_exc
         else:
+            if pushplus_ready():
+                return send_pushplus_alert(subject, body + f"\n\nSMTP failed: {type(exc).__name__}: {exc}")
             raise exc
-    return {"sent": True}
+    return {"sent": True, "channel": "email"}
 
 
 def send_smtp_message(cfg: dict, msg: EmailMessage):
