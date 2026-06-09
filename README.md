@@ -33,6 +33,19 @@ The app schedules a Beijing-time 20:00 daily refresh for saved indexes. If the c
 
 Render free instances may sleep and may use ephemeral storage. For durable long-term settings, attach a persistent disk or migrate the database to managed Postgres.
 
+## Persistent Cloud Backup
+
+Render's default filesystem can be reset after redeploys. To keep watchlists, focus metrics, valuation lines, alert rules, and cached snapshots across redeploys, configure a GitHub backup:
+
+```text
+GITHUB_BACKUP_TOKEN=your_fine_grained_token_with_contents_read_write
+GITHUB_BACKUP_REPO=j62303937-del/index-valuation-watch
+GITHUB_BACKUP_PATH=cloud-data/index-watch-backup.json
+GITHUB_BACKUP_BRANCH=main
+```
+
+When the local SQLite database is empty after a redeploy, the app restores from this backup automatically. Every watchlist or settings save updates the backup.
+
 ## Email Alerts
 
 Alert rules support these trigger directions: greater than or less than opportunity, median, or danger values.
