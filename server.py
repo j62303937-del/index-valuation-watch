@@ -79,6 +79,7 @@ FUNDDB_METRIC_LABELS = {"pe": "市盈率", "pb": "市净率", "dy": "股息率"}
 
 FUNDDB_EXTRA_INDEXES = [
     {"guCode": "980092.CNI", "rawCode": "980092", "displayCode": "980092.CNI", "name": "\u81ea\u7531\u73b0\u91d1\u6d41", "category": "funddb-extra"},
+    {"guCode": "SPX.GI", "rawCode": "SPX", "displayCode": "SPX.GI", "name": "\u6807\u666e500", "category": "funddb-extra"},
 ]
 ALERT_LEVEL_LABELS = {
     "gt_opportunity": "\u5927\u4e8e\u673a\u4f1a\u503c",
@@ -322,6 +323,20 @@ def send_email_alert(subject: str, body: str) -> dict:
     msg["From"] = cfg["sender"]
     msg["To"] = cfg["to"]
     msg.set_content(body)
+    try:
+        send_smtp_message(cfg, msg)
+    except OSError as exc:
+        if cfg["host"].lower() == "smtp.gmail.com" and cfg["port"] == 465:
+            retry_cfg = dict(cfg)
+            retry_cfg["port"] = 587
+            retry_cfg["tls"] = False
+            send_smtp_message(retry_cfg, msg)
+        else:
+            raise exc
+    return {"sent": True}
+
+
+def send_smtp_message(cfg: dict, msg: EmailMessage):
     if cfg["tls"]:
         with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=20) as smtp:
             if cfg["user"] and cfg["password"]:
@@ -333,7 +348,6 @@ def send_email_alert(subject: str, body: str) -> dict:
             if cfg["user"] and cfg["password"]:
                 smtp.login(cfg["user"], cfg["password"])
             smtp.send_message(msg)
-    return {"sent": True}
 
 
 def alert_event_exists(event_key: str) -> bool:
@@ -418,7 +432,10 @@ def evaluate_alerts_for_snapshot(snapshot: dict, settings: dict | None = None, f
                     f"Date: {as_of}\n"
                     f"Cached at: {snapshot.get('cachedAt') or ''}\n"
                 )
-                sent = send_email_alert(subject, body)
+                try:
+                    sent = send_email_alert(subject, body)
+                except Exception as exc:
+                    sent = {"sent": False, "error": f"{type(exc).__name__}: {exc}"}
                 result.update(sent)
                 if sent.get("sent"):
                     record_alert_event(event_key, result["ruleId"], rule.get("level") or "", as_of)
