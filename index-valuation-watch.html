@@ -61,6 +61,13 @@
     .empty { color: #697582; font-size: 14px; line-height: 1.6; }
     .rule { border: 1px solid #e2e6ea; border-radius: 7px; padding: 10px; margin-top: 8px; background: #fbfcfd; display: flex; justify-content: space-between; gap: 8px; }
     .del { border: 1px solid #e2b8b5; color: #c83b35; background: #fff; border-radius: 5px; cursor: pointer; }
+    .side { display: flex; flex-direction: column; gap: 14px; }
+    .side .panel { margin-top: 0 !important; }
+    .side .panel:nth-child(1) { order: 1; }
+    .side .panel:nth-child(2) { order: 2; }
+    .side .panel:nth-child(3) { order: 5; }
+    .side .panel:nth-child(4) { order: 4; }
+    .side .panel:nth-child(5) { order: 3; }
     @media (max-width: 1100px) { .app { grid-template-columns: 1fr; } .content { grid-template-columns: 1fr; } .list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); } }
     @media (max-width: 680px) { .content { padding: 12px; } .list, .stats { grid-template-columns: 1fr; } .chart-wrap { height: 330px; } h1 { font-size: 20px; } }
   </style>
@@ -752,7 +759,9 @@
         const list = res.results || [];
         const matched = list.filter(x => x.matched).length;
         const sent = list.filter(x => x.sent).length;
-        alert(res.emailConfigured ? `检查 ${list.length} 条规则，命中 ${matched} 条，已发送 ${sent} 条。` : `检查 ${list.length} 条规则，命中 ${matched} 条。邮箱提醒还没有配置。`);
+        const errors = list.filter(x => x.error).map(x => `${x.name || x.code || "提醒"}：${x.error}`).join("\n");
+        const base = res.emailConfigured ? `检查 ${list.length} 条规则，命中 ${matched} 条，已发送 ${sent} 条。` : `检查 ${list.length} 条规则，命中 ${matched} 条。邮箱提醒还没有配置。`;
+        alert(errors ? `${base}\n\n失败原因：\n${errors}` : base);
       } catch (e) {
         alert(`测试失败：${e.message}`);
       } finally {
