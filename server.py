@@ -32,6 +32,7 @@ DB_LOCK = threading.Lock()
 REFRESH_LOCK = threading.Lock()
 REFRESH_RUNNING = False
 BEIJING_TZ = timezone(timedelta(hours=8))
+APP_VERSION = "2026-06-09-alert-retry-2"
 
 
 INDEXES = [
@@ -1649,10 +1650,20 @@ class Handler(SimpleHTTPRequestHandler):
         results = []
         for snapshot in (store.get("snapshots") or {}).values():
             if isinstance(snapshot, dict):
-                results.extend(evaluate_alerts_for_snapshot(snapshot, settings, force=True))
+                try:
+                    results.extend(evaluate_alerts_for_snapshot(snapshot, settings, force=True))
+                except Exception as exc:
+                    results.append({
+                        "name": snapshot.get("name") or snapshot.get("code"),
+                        "code": snapshot.get("code"),
+                        "matched": False,
+                        "sent": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
         return {
             "ok": True,
             "data": {
+                "version": APP_VERSION,
                 "emailConfigured": email_alert_ready(),
                 "results": results,
             },
