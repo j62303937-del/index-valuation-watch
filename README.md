@@ -63,3 +63,11 @@ ALERT_EMAIL_TLS=true
 ```
 
 For QQ Mail, `ALERT_EMAIL_PASSWORD` should be the SMTP authorization code, not the login password.
+
+If the cloud provider blocks SMTP, configure PushPlus as an HTTPS fallback:
+
+```text
+PUSHPLUS_TOKEN=your_pushplus_token
+```
+
+When SMTP fails and `PUSHPLUS_TOKEN` is present, the app sends the alert through PushPlus instead.
