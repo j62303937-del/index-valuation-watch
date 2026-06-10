@@ -429,9 +429,41 @@ def pushplus_ready() -> bool:
     return bool(pushplus_token())
 
 
+def resend_config() -> dict:
+    return {
+        "api_key": os.environ.get("RESEND_API_KEY", "").strip(),
+        "sender": os.environ.get("RESEND_FROM", "Index Watch <onboarding@resend.dev>").strip(),
+        "to": os.environ.get("ALERT_EMAIL_TO", "694301103@qq.com").strip(),
+    }
+
+
+def resend_ready() -> bool:
+    cfg = resend_config()
+    return bool(cfg["api_key"] and cfg["sender"] and cfg["to"])
+
+
 def email_alert_ready() -> bool:
     cfg = email_alert_config()
-    return bool(cfg["host"] and cfg["sender"] and cfg["to"]) or pushplus_ready()
+    return resend_ready() or bool(cfg["host"] and cfg["sender"] and cfg["to"]) or pushplus_ready()
+
+
+def send_resend_alert(subject: str, body: str) -> dict:
+    cfg = resend_config()
+    if not resend_ready():
+        return {"sent": False, "error": "Resend is not configured"}
+    resp = requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"},
+        json={"from": cfg["sender"], "to": [cfg["to"]], "subject": subject, "text": body},
+        timeout=30,
+    )
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"raw": resp.text}
+    if resp.ok and (data.get("id") or resp.status_code in {200, 201, 202}):
+        return {"sent": True, "channel": "resend", "id": data.get("id")}
+    return {"sent": False, "error": f"Resend failed: HTTP {resp.status_code} {data}"}
 
 
 def send_pushplus_alert(subject: str, body: str) -> dict:
@@ -453,6 +485,8 @@ def send_pushplus_alert(subject: str, body: str) -> dict:
 
 
 def send_email_alert(subject: str, body: str) -> dict:
+    if resend_ready():
+        return send_resend_alert(subject, body)
     cfg = email_alert_config()
     if not (cfg["host"] and cfg["sender"] and cfg["to"]):
         if pushplus_ready():
