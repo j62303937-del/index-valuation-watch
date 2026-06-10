@@ -34,11 +34,16 @@
     .pad { padding: 16px; }
     .chart-panel { padding: 18px 20px 16px; }
     .chart-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .chart-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+    .chart-tools .btn { min-height: 32px; padding: 0 10px; font-size: 13px; }
+    .date-input { min-height: 32px; border: 1px solid #cbd2da; border-radius: 4px; padding: 0 8px; color: #27313c; background: #fff; }
     h2 { margin: 0; font-size: 18px; }
     .chart-wrap { height: 430px; position: relative; }
     canvas { width: 100%; height: 100%; }
     .loading-mask { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; gap: 12px; background: rgba(255,255,255,.78); color: #27313c; font-weight: 800; z-index: 2; }
     .loading-mask.show { display: flex; }
+    .chart-tooltip { position: absolute; min-width: 150px; max-width: 220px; padding: 8px 10px; border: 1px solid #cbd2da; border-radius: 6px; background: rgba(255,255,255,.96); color: #27313c; box-shadow: 0 8px 22px rgba(21,33,45,.18); font-size: 12px; line-height: 1.55; pointer-events: none; transform: translate(-50%, calc(-100% - 10px)); display: none; z-index: 3; }
+    .chart-tooltip strong { display: block; font-size: 13px; margin-bottom: 2px; }
     .spinner { width: 26px; height: 26px; border: 3px solid #cbd2da; border-top-color: #2f9db4; border-radius: 50%; animation: spin .85s linear infinite; }
     .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 10px 14px; border-radius: 7px; background: #17202a; color: #fff; font-size: 14px; box-shadow: 0 8px 24px rgba(21,33,45,.25); opacity: 0; pointer-events: none; transition: opacity .18s ease; z-index: 10; }
     .toast.show { opacity: 1; }
@@ -103,7 +108,18 @@
           </div>
           <div class="panel chart-panel">
             <div class="chart-head"><h2 id="chartTitle">市盈率TTM</h2><span id="statusTag" class="pill mid"></span></div>
-            <div class="chart-wrap"><canvas id="chart"></canvas><div id="loadingMask" class="loading-mask"><span class="spinner"></span><span id="loadingText">加载中...</span></div></div>
+            <div class="chart-tools">
+              <span>横坐标</span>
+              <button class="btn x-range" data-window="1m">近1月</button>
+              <button class="btn x-range" data-window="3m">近3月</button>
+              <button class="btn x-range" data-window="6m">近6月</button>
+              <button class="btn x-range" data-window="1y">近1年</button>
+              <button class="btn x-range active" data-window="all">全部</button>
+              <input id="xStart" class="date-input" type="date" aria-label="开始日期">
+              <input id="xEnd" class="date-input" type="date" aria-label="结束日期">
+              <button id="applyXRange" class="btn">应用</button>
+            </div>
+            <div class="chart-wrap"><canvas id="chart"></canvas><div id="chartTooltip" class="chart-tooltip"></div><div id="loadingMask" class="loading-mask"><span class="spinner"></span><span id="loadingText">加载中...</span></div></div>
             <div id="stats" class="stats"></div>
           </div>
         </section>
@@ -147,7 +163,7 @@
   </div>
   <div id="toast" class="toast"></div>
   <script>
-    const state = { items: [], savedItems: [], selected: null, range: "10", metric: "pe", searching: false, loading: false, loadingCode: "" };
+    const state = { items: [], savedItems: [], selected: null, range: "10", metric: "pe", xWindow: "all", xStart: "", xEnd: "", searching: false, loading: false, loadingCode: "" };
     const saved = new Set(JSON.parse(localStorage.getItem("savedIndexes") || "[]"));
     let savedMeta = JSON.parse(localStorage.getItem("savedIndexMeta") || "{}");
     let rules = JSON.parse(localStorage.getItem("alertRules") || "[]");
@@ -155,6 +171,7 @@
     let focusMetrics = JSON.parse(localStorage.getItem("focusMetrics") || "{}");
     let axisRanges = JSON.parse(localStorage.getItem("axisRanges") || "{}");
     const metricKeys = ["pe", "pb", "dy", "ps"];
+    let chartHoverState = null;
 
     const text = v => v == null || v === "" || (typeof v === "number" && Number.isNaN(v)) ? "暂无" : String(v);
     const pct = v => v == null ? "暂无" : `${v}%`;
@@ -500,6 +517,47 @@
       document.getElementById("rightAxisMax").value = range.rightMax ?? "";
     }
 
+    function parseDateValue(value) {
+      const time = new Date(`${value}T00:00:00`).getTime();
+      return Number.isFinite(time) ? time : null;
+    }
+
+    function shiftDate(date, windowKey) {
+      const next = new Date(date.getTime());
+      if (windowKey === "1m") next.setMonth(next.getMonth() - 1);
+      if (windowKey === "3m") next.setMonth(next.getMonth() - 3);
+      if (windowKey === "6m") next.setMonth(next.getMonth() - 6);
+      if (windowKey === "1y") next.setFullYear(next.getFullYear() - 1);
+      return next;
+    }
+
+    function chartDateBounds(rows) {
+      const dates = rows.map(x => x.date).filter(Boolean).sort();
+      if (!dates.length) return { start: null, end: null };
+      let start = null;
+      let end = dates[dates.length - 1];
+      if (state.xStart || state.xEnd) {
+        start = state.xStart || dates[0];
+        end = state.xEnd || end;
+      } else if (state.xWindow !== "all") {
+        start = shiftDate(new Date(`${end}T00:00:00`), state.xWindow).toISOString().slice(0, 10);
+      }
+      return { start, end };
+    }
+
+    function filterRowsByChartWindow(rows, bounds) {
+      if (!bounds.start && !bounds.end) return rows;
+      const startTime = bounds.start ? parseDateValue(bounds.start) : null;
+      const endTime = bounds.end ? parseDateValue(bounds.end) : null;
+      return rows.filter(row => {
+        const t = parseDateValue(row.date);
+        if (t == null) return false;
+        if (startTime != null && t < startTime) return false;
+        if (endTime != null && t > endTime) return false;
+        return true;
+      });
+    }
+
     function drawChart(item, metric) {
       const canvas = document.getElementById("chart");
       const box = canvas.parentElement.getBoundingClientRect();
@@ -513,14 +571,18 @@
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
 
-      const priceRows = (item.series?.price || []).filter(x => x.date && x.close != null);
-      const metricRows = (item.series?.[state.metric] || []).filter(x => x.date && x.value != null);
+      const allPriceRows = (item.series?.price || []).filter(x => x.date && x.close != null);
+      const allMetricRows = (item.series?.[state.metric] || []).filter(x => x.date && x.value != null);
+      const chartBounds = chartDateBounds([...allPriceRows, ...allMetricRows]);
+      const priceRows = filterRowsByChartWindow(allPriceRows, chartBounds);
+      const metricRows = filterRowsByChartWindow(allMetricRows, chartBounds);
       const thresholdVals = [metric.current, metric.danger, metric.median, metric.opportunity].filter(v => v != null).map(Number);
       const hasMetricSeries = metricRows.length > 1;
       const hasMetric = hasMetricSeries || thresholdVals.length > 0;
       const hasPrice = priceRows.length > 1;
       if (!hasMetric && !hasPrice) {
-        ctx.fillStyle = "#697582"; ctx.font = "bold 16px Microsoft YaHei"; ctx.fillText("暂无历史曲线数据", pad.l, pad.t + 30); return;
+        chartHoverState = null;
+        ctx.fillStyle = "#697582"; ctx.font = "bold 16px Microsoft YaHei"; ctx.fillText("当前横坐标范围内暂无历史曲线数据", pad.l, pad.t + 30); return;
       }
 
       const baseRows = hasPrice ? priceRows : metricRows;
@@ -639,6 +701,35 @@
       lineLegend("危险值", "#b9322b", [8, 7]);
       lineLegend("中位数", "#7d8791", [8, 7]);
       lineLegend("机会值", "#32945e", [8, 7]);
+      chartHoverState = { pad, plotW, plotH, labels, priceByDate, metricByDate, metricLabel: metric.label || "估值指标", priceLabel: "指数点位" };
+    }
+
+    function hideChartTooltip() {
+      const tip = document.getElementById("chartTooltip");
+      if (tip) tip.style.display = "none";
+    }
+
+    function handleChartHover(event) {
+      const canvas = document.getElementById("chart");
+      const tip = document.getElementById("chartTooltip");
+      const chart = chartHoverState;
+      if (!canvas || !tip || !chart || !chart.labels.length) return hideChartTooltip();
+      const rect = canvas.getBoundingClientRect();
+      const mx = event.clientX - rect.left;
+      const my = event.clientY - rect.top;
+      if (mx < chart.pad.l || mx > chart.pad.l + chart.plotW || my < chart.pad.t || my > chart.pad.t + chart.plotH) return hideChartTooltip();
+      const ratio = (mx - chart.pad.l) / Math.max(chart.plotW, 1);
+      const idx = Math.max(0, Math.min(chart.labels.length - 1, Math.round(ratio * (chart.labels.length - 1))));
+      const date = chart.labels[idx];
+      const metricValue = chart.metricByDate.get(date);
+      const priceValue = chart.priceByDate.get(date);
+      const parts = [`<strong>${date}</strong>`];
+      if (metricValue != null) parts.push(`${chart.metricLabel}: ${money(metricValue)}`);
+      if (priceValue != null) parts.push(`${chart.priceLabel}: ${money(priceValue)}`);
+      tip.innerHTML = parts.join("<br>");
+      tip.style.left = `${mx}px`;
+      tip.style.top = `${my}px`;
+      tip.style.display = "block";
     }
 
     function renderRules() {
@@ -672,6 +763,24 @@
       window.searchTimer = setTimeout(() => value.length >= 2 ? search(value).catch(console.error) : loadInitial().catch(console.error), 250);
     }, 600);
     document.querySelectorAll(".range").forEach(btn => btn.onclick = () => { state.range = btn.dataset.range; document.querySelectorAll(".range").forEach(x => x.classList.toggle("active", x === btn)); if (state.selected) loadDetail(state.selected.rawCode).catch(console.error); });
+    document.querySelectorAll(".x-range").forEach(btn => btn.onclick = () => {
+      state.xWindow = btn.dataset.window;
+      state.xStart = "";
+      state.xEnd = "";
+      document.getElementById("xStart").value = "";
+      document.getElementById("xEnd").value = "";
+      document.querySelectorAll(".x-range").forEach(x => x.classList.toggle("active", x === btn));
+      render();
+    });
+    document.getElementById("applyXRange").onclick = () => {
+      state.xStart = document.getElementById("xStart").value;
+      state.xEnd = document.getElementById("xEnd").value;
+      state.xWindow = "custom";
+      document.querySelectorAll(".x-range").forEach(x => x.classList.remove("active"));
+      render();
+    };
+    document.getElementById("chart").addEventListener("mousemove", handleChartHover);
+    document.getElementById("chart").addEventListener("mouseleave", hideChartTooltip);
     document.querySelectorAll(".metric").forEach(btn => btn.onclick = () => { state.metric = btn.dataset.metric; document.querySelectorAll(".metric").forEach(x => x.classList.toggle("active", x === btn)); document.getElementById("ruleMetric").value = state.metric; render(); });
     document.getElementById("thresholdMetric").onchange = fillThresholdForm;
     document.getElementById("saveFocusMetric").onclick = () => {
