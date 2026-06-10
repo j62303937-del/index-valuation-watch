@@ -746,7 +746,10 @@
       const level = document.getElementById("ruleLevel");
       rules.push({ id: Date.now(), code: state.selected.code, metric: document.getElementById("ruleMetric").value, level: level.value, levelText: level.options[level.selectedIndex].text });
       localStorage.setItem("alertRules", JSON.stringify(rules));
-      syncSettings().then(() => notify("提醒规则已保存到云端")).catch(e => notify(`保存失败：${e.message}`));
+      syncSettings()
+        .then(loadSettings)
+        .then(() => notify("提醒规则已保存到云端"))
+        .catch(e => notify(`保存失败：${e.message}`));
       renderRules();
     };
     document.getElementById("testAlerts").onclick = async () => {
