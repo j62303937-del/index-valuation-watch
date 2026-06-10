@@ -221,15 +221,24 @@ def github_backup_headers() -> dict:
     }
 
 
-def github_backup_enabled() -> bool:
+def github_backup_read_enabled() -> bool:
+    return bool(GITHUB_BACKUP_REPO and GITHUB_BACKUP_PATH)
+
+
+def github_backup_write_enabled() -> bool:
     return bool(GITHUB_BACKUP_TOKEN and GITHUB_BACKUP_REPO and GITHUB_BACKUP_PATH)
 
 
 def github_backup_get() -> dict | None:
-    if not github_backup_enabled():
+    if not github_backup_read_enabled():
         return None
+    raw_url = f"https://raw.githubusercontent.com/{GITHUB_BACKUP_REPO}/{urllib.parse.quote(GITHUB_BACKUP_BRANCH)}/{GITHUB_BACKUP_PATH}"
+    raw_resp = requests.get(raw_url, timeout=20)
+    if raw_resp.status_code == 200 and raw_resp.text.strip():
+        return json.loads(raw_resp.text)
     url = f"https://api.github.com/repos/{GITHUB_BACKUP_REPO}/contents/{GITHUB_BACKUP_PATH}?ref={urllib.parse.quote(GITHUB_BACKUP_BRANCH)}"
-    resp = requests.get(url, headers=github_backup_headers(), timeout=20)
+    headers = github_backup_headers() if GITHUB_BACKUP_TOKEN else {"Accept": "application/vnd.github+json", "User-Agent": "index-valuation-watch"}
+    resp = requests.get(url, headers=headers, timeout=20)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
@@ -243,7 +252,7 @@ def github_backup_get() -> dict | None:
 
 
 def github_backup_put(data: dict):
-    if not github_backup_enabled():
+    if not github_backup_write_enabled():
         return
     import base64
     current_sha = None
@@ -285,7 +294,7 @@ def github_backup_restore(kind: str) -> dict | None:
 
 
 def github_backup_save():
-    if not github_backup_enabled():
+    if not github_backup_write_enabled():
         return
     data = {
         "version": APP_VERSION,
@@ -1829,6 +1838,10 @@ class Handler(SimpleHTTPRequestHandler):
         if not (store.get("snapshots") or {}) and (store.get("items") or []):
             store = refresh_watchlist_cache()
         settings = load_app_settings()
+        if not (settings.get("rules") or []):
+            restored_settings = github_backup_restore("settings")
+            if restored_settings:
+                settings = load_app_settings(allow_restore=False)
         results = []
         if not (store.get("items") or []) and not (store.get("snapshots") or {}):
             results.append({
