@@ -95,10 +95,10 @@
         <button class="btn range" data-range="5">5Y</button>
         <button class="btn range active" data-range="10">10Y</button>
         <button class="btn range" data-range="all">上市以来</button>
-        <button class="btn metric active" data-metric="pe">市盈率TTM</button>
-        <button class="btn metric" data-metric="pb">市净率LF</button>
-        <button class="btn metric" data-metric="dy">股息率</button>
-        <button class="btn metric" data-metric="ps">市销率TTM</button>
+        <button class="btn metric active" data-metric="pe">市盈率PE</button>
+        <button class="btn metric" data-metric="pb">市净率PB</button>
+        <button class="btn metric" data-metric="dy">股息率DY</button>
+        <button class="btn metric" data-metric="ps">市销率PS</button>
       </div>
       <div class="content">
         <section>
@@ -107,7 +107,7 @@
             <button id="saveBtn" class="btn">☆</button>
           </div>
           <div class="panel chart-panel">
-            <div class="chart-head"><h2 id="chartTitle">市盈率TTM</h2><span id="statusTag" class="pill mid"></span></div>
+            <div class="chart-head"><h2 id="chartTitle">市盈率PE</h2><span id="statusTag" class="pill mid"></span></div>
             <div class="chart-tools">
               <span>横坐标</span>
               <button class="btn x-range" data-window="1m">近1月</button>
@@ -130,7 +130,7 @@
           </div>
           <div class="panel pad" style="margin-top:14px">
             <h2>重点指标</h2>
-            <div class="form-row"><label>当前指数重点关注</label><select id="focusMetric" class="input"><option value="">全部指标</option><option value="pe">市盈率TTM</option><option value="pb">市净率LF</option><option value="dy">股息率</option><option value="ps">市销率TTM</option></select></div>
+            <div class="form-row"><label>当前指数重点关注</label><select id="focusMetric" class="input"><option value="">全部指标</option><option value="pe">市盈率PE</option><option value="pb">市净率PB</option><option value="dy">股息率DY</option><option value="ps">市销率PS</option></select></div>
             <button id="saveFocusMetric" class="primary">保存重点指标</button>
           </div>
           <div class="panel pad" style="margin-top:14px">
@@ -143,7 +143,7 @@
           </div>
           <div class="panel pad" style="margin-top:14px">
             <h2>估值线设置</h2>
-            <div class="form-row"><label>指标</label><select id="thresholdMetric" class="input"><option value="pe">市盈率TTM</option><option value="pb">市净率LF</option><option value="dy">股息率</option><option value="ps">市销率TTM</option></select></div>
+            <div class="form-row"><label>指标</label><select id="thresholdMetric" class="input"><option value="pe">市盈率PE</option><option value="pb">市净率PB</option><option value="dy">股息率DY</option><option value="ps">市销率PS</option></select></div>
             <div class="form-row"><label>危险值</label><input id="dangerInput" class="input" type="number" step="0.01" placeholder="例如 35.83"></div>
             <div class="form-row"><label>中位数</label><input id="medianInput" class="input" type="number" step="0.01" placeholder="例如 30.63"></div>
             <div class="form-row"><label>机会值</label><input id="opportunityInput" class="input" type="number" step="0.01" placeholder="例如 25.72"></div>
@@ -151,7 +151,7 @@
           </div>
           <div class="panel pad" style="margin-top:14px">
             <h2>提醒规则</h2>
-            <div class="form-row"><label>指标</label><select id="ruleMetric" class="input"><option value="pe">市盈率TTM</option><option value="pb">市净率LF</option><option value="dy">股息率</option><option value="ps">市销率TTM</option></select></div>
+            <div class="form-row"><label>指标</label><select id="ruleMetric" class="input"><option value="pe">市盈率PE</option><option value="pb">市净率PB</option><option value="dy">股息率DY</option><option value="ps">市销率PS</option></select></div>
             <div class="form-row"><label>触发状态</label><select id="ruleLevel" class="input"><option value="gt_opportunity">大于机会值</option><option value="lt_opportunity">小于机会值</option><option value="gt_median">大于中位数</option><option value="lt_median">小于中位数</option><option value="gt_danger">大于危险值</option><option value="lt_danger">小于危险值</option></select></div>
             <button id="addRule" class="primary">添加提醒规则</button>
             <button id="testAlerts" class="ghost" style="margin-top:8px;width:100%">测试提醒</button>
