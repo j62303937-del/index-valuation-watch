@@ -688,6 +688,7 @@ def refresh_watchlist_cache() -> dict:
             return load_watchlist_store()
         REFRESH_RUNNING = True
     try:
+        DATA_CACHE.clear()
         store = load_watchlist_store()
         items = sanitize_watch_items(store.get("items") or [])
         snapshots = dict(store.get("snapshots") or {})
@@ -1791,6 +1792,7 @@ class Handler(SimpleHTTPRequestHandler):
         return {"ok": True, "data": build_index_payload(item, years, quote, focus_metric)}
 
     def handle_watchlist(self) -> dict:
+        refresh_watchlist_if_due(async_run=False)
         store = load_watchlist_store()
         items = sanitize_watch_items(store.get("items") or [])
         snapshots = store.get("snapshots") or {}
