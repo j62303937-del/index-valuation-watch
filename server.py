@@ -923,10 +923,10 @@ def empty_metric(label: str) -> dict:
 
 def default_metrics() -> dict:
     return {
-        "pe": empty_metric("市盈率TTM"),
-        "pb": empty_metric("市净率LF"),
-        "dy": empty_metric("股息率"),
-        "ps": empty_metric("市销率TTM"),
+        "pe": empty_metric("市盈率PE"),
+        "pb": empty_metric("市净率PB"),
+        "dy": empty_metric("股息率DY"),
+        "ps": empty_metric("市销率PS"),
     }
 
 
@@ -1156,8 +1156,8 @@ def etf_run_metrics(raw_code: str) -> dict:
         "danger": first_match(pb_text, r"80%分位<!-- -->([\d.]+)"),
     }
     return cache_set(cache_key, {
-        "pe": metric_with_stats("市盈率TTM", pe_values, used_url or "ETF.run", as_of, "日频/网页统计"),
-        "pb": metric_with_stats("市净率LF", pb_values, used_url or "ETF.run", as_of, "日频/网页统计"),
+        "pe": metric_with_stats("市盈率PE", pe_values, used_url or "ETF.run", as_of, "日频/网页统计"),
+        "pb": metric_with_stats("市净率PB", pb_values, used_url or "ETF.run", as_of, "日频/网页统计"),
         "_daily": parse_etf_run_daily(html),
     })
 
@@ -1225,10 +1225,10 @@ def nasdaq100_metrics() -> dict:
     text = fetch_text("https://r.jina.ai/http://r.jina.ai/http://https://vcpscanner.com/market-valuation/nasdaq-100", timeout=30)
     as_of = first_match(text, r"as of ([0-9]{4}-[0-9]{2}-[0-9]{2})")
     return {
-        "pe": current_metric("市盈率TTM", first_match(text, r"Nasdaq 100 P/E ratio is ([\d.]+)"), "VCP Scanner via Jina Reader", as_of, "当前值"),
-        "pb": current_metric("市净率LF", first_match(text, r"P/B\s*([\d.]+)"), "VCP Scanner via Jina Reader", as_of, "当前值"),
-        "dy": current_metric("股息率", first_match(text, r"Dividend Yield\s*([\d.]+)%"), "VCP Scanner via Jina Reader", as_of, "当前值"),
-        "ps": current_metric("市销率TTM", first_match(text, r"P/S\s*([\d.]+)"), "VCP Scanner via Jina Reader", as_of, "当前值"),
+        "pe": current_metric("市盈率PE", first_match(text, r"Nasdaq 100 P/E ratio is ([\d.]+)"), "VCP Scanner via Jina Reader", as_of, "当前值"),
+        "pb": current_metric("市净率PB", first_match(text, r"P/B\s*([\d.]+)"), "VCP Scanner via Jina Reader", as_of, "当前值"),
+        "dy": current_metric("股息率DY", first_match(text, r"Dividend Yield\s*([\d.]+)%"), "VCP Scanner via Jina Reader", as_of, "当前值"),
+        "ps": current_metric("市销率PS", first_match(text, r"P/S\s*([\d.]+)"), "VCP Scanner via Jina Reader", as_of, "当前值"),
     }
 
 
@@ -1289,10 +1289,10 @@ def akshare_csindex_value(index_code: str | None, years: int | None) -> dict:
     dy_rows = sorted(filter_years(dy_rows, years), key=lambda x: x["date"])
     metrics = {}
     if pe_rows:
-        metrics["pe"] = metric_from_series("市盈率TTM", pe_rows)
+        metrics["pe"] = metric_from_series("市盈率PE", pe_rows)
         metrics["pe"]["source"] = "AKShare stock_zh_index_value_csindex"
     if dy_rows:
-        metrics["dy"] = metric_from_series("股息率", dy_rows, high_is_good=True)
+        metrics["dy"] = metric_from_series("股息率DY", dy_rows, high_is_good=True)
         metrics["dy"]["source"] = "AKShare stock_zh_index_value_csindex"
     return cache_set(cache_key, {"name": name, "metrics": metrics, "series": {"pe": pe_rows, "dy": dy_rows}})
 
@@ -1335,9 +1335,9 @@ def akshare_legulegu_daily(raw_code: str, years: int | None) -> dict:
     pe_rows = sorted(filter_years(pe_rows, years), key=lambda x: x["date"])
     pb_rows = sorted(filter_years(pb_rows, years), key=lambda x: x["date"])
     if pe_rows:
-        metrics["pe"] = metric_from_series("市盈率TTM", pe_rows, "AKShare stock_index_pe_lg / 乐咕乐股", "日频")
+        metrics["pe"] = metric_from_series("市盈率PE", pe_rows, "AKShare stock_index_pe_lg / 乐咕乐股", "日频")
     if pb_rows:
-        metrics["pb"] = metric_from_series("市净率LF", pb_rows, "AKShare stock_index_pb_lg / 乐咕乐股", "日频")
+        metrics["pb"] = metric_from_series("市净率PB", pb_rows, "AKShare stock_index_pb_lg / 乐咕乐股", "日频")
     return cache_set(cache_key, {"metrics": metrics, "series": {"pe": pe_rows, "pb": pb_rows}})
 
 
@@ -1458,8 +1458,29 @@ def funddb_metric_history(item: dict, metric_key: str, years: int | None) -> dic
                     price_rows.append({"date": day, "close": value})
     metric_rows = sorted(filter_years(metric_rows, years), key=lambda x: x["date"])
     price_rows = sorted(filter_years(price_rows, years), key=lambda x: x["date"])
+    adjusted_to_price = False
+    if metric_rows and price_rows and price_rows[-1]["date"] > metric_rows[-1]["date"]:
+        price_by_date = {row["date"]: row["close"] for row in price_rows if row.get("close") is not None}
+        base_metric = metric_rows[-1]
+        base_price = clean_number(price_by_date.get(base_metric["date"]))
+        if base_price:
+            last_date = base_metric["date"]
+            last_value = clean_number(base_metric.get("value"))
+            for row in price_rows:
+                row_date = row.get("date")
+                row_price = clean_number(row.get("close"))
+                if row_date <= last_date or row_price is None or last_value is None:
+                    continue
+                if metric_key == "dy":
+                    value = last_value * base_price / row_price
+                else:
+                    value = last_value * row_price / base_price
+                metric_rows.append({"date": row_date, "value": round(value, 4), "estimated": True})
+                adjusted_to_price = True
     label = default_metrics()[metric_key]["label"]
     metric = metric_from_series(label, metric_rows, f"funddb/韭圈儿 {gu_code}", "日频", high_is_good=(metric_key == "dy"))
+    if adjusted_to_price:
+        metric["source"] = f"{metric['source']} + 最新收盘价折算"
     return cache_set(cache_key, {"metric": metric, "series": metric_rows, "price": price_rows})
 
 
@@ -1622,7 +1643,7 @@ def build_index_payload(item: dict, years: int | None, quote: dict | None, focus
             price_series = funddb_price_series
     else:
         if wants_metric(focus_metric, "pe"):
-            metrics["pe"] = metric_from_series("市盈率TTM", pe_series)
+            metrics["pe"] = metric_from_series("市盈率PE", pe_series)
         funddb_price_series = []
         for key in ("pe", "pb", "dy"):
             if wants_metric(focus_metric, key):
@@ -1671,10 +1692,10 @@ def build_index_payload(item: dict, years: int | None, quote: dict | None, focus
 
     if wants_metric(focus_metric, "pe") and not pe_series and etf_daily.get("pe") and len(filter_years(etf_daily["pe"], years)) > len(pe_series):
         pe_series = filter_years(etf_daily["pe"], years)
-        metrics["pe"] = metric_from_series("市盈率TTM", pe_series, "ETF.run compressedIndexDaily", "日频")
+        metrics["pe"] = metric_from_series("市盈率PE", pe_series, "ETF.run compressedIndexDaily", "日频")
     if wants_metric(focus_metric, "pb") and not pb_series and etf_daily.get("pb") and len(filter_years(etf_daily["pb"], years)) > len(pb_series):
         pb_series = filter_years(etf_daily["pb"], years)
-        metrics["pb"] = metric_from_series("市净率LF", pb_series, "ETF.run compressedIndexDaily", "日频")
+        metrics["pb"] = metric_from_series("市净率PB", pb_series, "ETF.run compressedIndexDaily", "日频")
     if wants_metric(focus_metric, "pe"):
         metrics["pe"] = fill_metric_stats_from_series(metrics["pe"], pe_series)
     if wants_metric(focus_metric, "pb"):
