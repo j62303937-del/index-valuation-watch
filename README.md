@@ -50,6 +50,16 @@ When the local SQLite database is empty after a redeploy, the app restores from 
 
 Alert rules support these trigger directions: greater than or less than opportunity, median, or danger values.
 
+Recommended free email path on Render: use Resend's HTTPS API. It avoids SMTP ports that some cloud hosts block.
+
+```text
+RESEND_API_KEY=your_resend_api_key
+RESEND_FROM=Index Watch <onboarding@resend.dev>
+ALERT_EMAIL_TO=694301103@qq.com
+```
+
+Resend's default `onboarding@resend.dev` sender is useful for first tests. For production, add and verify your own sending domain in Resend.
+
 Set these Render environment variables to enable email delivery:
 
 ```text
